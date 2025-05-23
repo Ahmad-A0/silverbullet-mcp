@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2020", // Or a newer version like ES2022
+    "module": "NodeNext", // Or "CommonJS" if you prefer
+    "moduleResolution": "NodeNext", // Or "Node"
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "resolveJsonModule": true, // If you plan to import JSON files
+    "sourceMap": true, // Useful for debugging
+    // "baseUrl": "./", // Optional: if you want to set a base directory for non-relative module imports
+    // "paths": { // Optional: for path mapping
+    //   "@/*": ["src/*"]
+    // }
+  },
+  "include": ["src/**/*.ts"], // Specifies which files to include in compilation
+  "exclude": ["node_modules", "dist"] // Specifies which files/folders to exclude
+}
