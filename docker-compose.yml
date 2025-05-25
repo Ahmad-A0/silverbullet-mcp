@@ -10,7 +10,7 @@ services:
       - ./space:/space
 
   silverbullet-mcp-server:
-    build: ./
+    image: ghcr.io/ahmad-a0/silverbullet-mcp:main
     ports:
       - "4000:4000"
     environment:
