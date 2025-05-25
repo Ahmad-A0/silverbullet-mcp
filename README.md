@@ -2,9 +2,9 @@
 
 This project provides a Model Context Protocol (MCP) server that acts as a bridge to your [SilverBullet](https://silverbullet.md) instance. It enables Large Language Models (LLMs) and other MCP-compatible clients to interact with your SilverBullet notes and data by exposing them through standardized MCP `tools` and `resources`.
 
-![Retirement Prompt Demo](retirement-prompt.gif)
-
 The server is designed to be run via Docker Compose alongside your existing SilverBullet Docker container. It handles authentication and provides a secure way for external applications to access and manipulate your SilverBullet space.
+
+![Retirement Prompt Demo](retirement-prompt.gif)
 
 ## Project Structure
 
@@ -126,7 +126,3 @@ Replace `YOUR_MCP_TOKEN` with the actual value of the `MCP_TOKEN` environment va
 **Endpoint**: `http://localhost:4000/mcp` (or as configured by `PORT` if not using Docker Compose defaults).
 
 Consult your MCP client's documentation on how to configure connections to remote HTTP MCP servers, including how to send custom headers or append query parameters.
-
-## Contributing
-
-Please refer to the contributing guidelines if you wish to contribute to this project. (Create a `CONTRIBUTING.md` if applicable).
