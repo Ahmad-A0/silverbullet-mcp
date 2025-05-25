@@ -1,6 +1,6 @@
 services:
   silverbullet:
-    image: silverbulletmd/silverbullet:latest
+    image: ghcr.io/silverbulletmd/silverbullet:v2
     ports:
       - "3000:3000"
     environment:
