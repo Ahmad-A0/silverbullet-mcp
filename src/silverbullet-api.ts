@@ -137,3 +137,23 @@ export async function writeNoteAPI(filename: string, content: string): Promise<v
         await handleResponseError(url, response!, `to write note ${filename}`);
     }
 }
+
+export async function deleteNoteAPI(filename: string): Promise<void> {
+    const url = `${SB_API_BASE_URL}/${encodeURIComponent(filename)}`;
+    const fetchHeaders = createFetchHeaders();
+
+    let response: Response;
+    try {
+        response = await fetch(url, {
+            method: 'DELETE',
+            headers: fetchHeaders,
+        });
+    } catch (error) {
+        console.error(`[deleteNoteAPI] Fetch failed for ${filename}:`, error);
+        handleFetchError(url, error);
+    }
+
+    if (!response!.ok) {
+        await handleResponseError(url, response!, `to delete note ${filename}`);
+    }
+}

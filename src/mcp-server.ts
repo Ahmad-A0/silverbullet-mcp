@@ -2,7 +2,7 @@
 
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { listNotesAPI, readNoteAPI, writeNoteAPI } from './silverbullet-api.js';
+import { listNotesAPI, readNoteAPI, writeNoteAPI, deleteNoteAPI } from './silverbullet-api.js';
 import { getCachedNoteContent } from './cache.js';
 import type { SearchResult, SearchMatch } from './types.js';
 
@@ -101,20 +101,16 @@ export function configureMcpServerInstance(server: McpServer): void {
             namePattern: z
                 .string()
                 .optional()
-                .describe('Optional regex pattern to filter note names (e.g., "project.*" for notes starting with "project")'),
+                .describe('Optional javascript regex pattern to filter note names (e.g., "project.*" for notes starting with "project")'),
             permission: z
                 .enum(['rw', 'ro'])
                 .optional()
-                .describe('Filter by permission: "rw" for read-write, "ro" for read-only'),
-            contentSearch: z
-                .string()
                 .optional()
-                .describe('Optional text to search for within note contents (case-insensitive)'),
-        },
-        async ({ namePattern, permission, contentSearch }) => {
-            try {
-                let notes = await listNotesAPI();
-
+                .describe('Filter by permission: "rw" for read-write, "ro" for read-only'),
+            },
+            async ({ namePattern, permission }) => {
+                try {
+                    let notes = await listNotesAPI();
                 // Apply name pattern filter
                 if (namePattern) {
                     const regex = new RegExp(namePattern, 'i');
@@ -125,24 +121,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                 if (permission) {
                     notes = notes.filter((note) => note.perm === permission);
                 }
-
-                // Apply content search filter
-                if (contentSearch) {
-                    const contentFilteredNotes = [];
-                    for (const note of notes) {
-                        try {
-                            const content = await getCachedNoteContent(note.name, true);
-                            if (content.toLowerCase().includes(contentSearch.toLowerCase())) {
-                                contentFilteredNotes.push(note);
-                            }
-                        } catch (error) {
-                            console.error(`[MCP Tool: list-notes] Failed to read note ${note.name}:`, error);
-                            // Continue with other notes even if one fails
-                        }
-                    }
-                    notes = contentFilteredNotes;
-                }
-
+                
                 const notesList = notes
                     .map((note) => `- ${note.name} (${note.perm === 'rw' ? 'read-write' : 'read-only'})`)
                     .join('\n');
@@ -150,8 +129,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                 const filterSummary = [];
                 if (namePattern) filterSummary.push(`name pattern: "${namePattern}"`);
                 if (permission) filterSummary.push(`permission: ${permission}`);
-                if (contentSearch) filterSummary.push(`content search: "${contentSearch}"`);
-
+                
                 const headerText =
                     filterSummary.length > 0
                         ? `Notes matching filters (${filterSummary.join(', ')}):`
@@ -221,6 +199,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                 const searchResults = [];
                 const flags = caseSensitive ? 'g' : 'gi';
                 let searchRegex;
+                let regexInvalidFallback = false;
 
                 try {
                     searchRegex = new RegExp(query, flags);
@@ -228,6 +207,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                     // If regex is invalid, escape special characters and treat as literal
                     const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                     searchRegex = new RegExp(escapedQuery, flags);
+                    regexInvalidFallback = true;
                 }
 
                 for (const note of notes) {
@@ -329,12 +309,17 @@ export function configureMcpServerInstance(server: McpServer): void {
                 const totalMatches = searchResults.reduce((sum, result) => sum + result.score, 0);
 
                 let output = '';
+                let fallbackMessage = '';
+
+                if (regexInvalidFallback) {
+                    fallbackMessage = `Warning: Your regex query "${query}" was invalid and was treated as a literal search.\n`;
+                }
 
                 // Header with pagination info
                 if (concise) {
-                    output = `SEARCH: "${query}" | Results: ${totalResults} notes, ${totalMatches} matches | Page ${page}/${totalPages}\n\n`;
+                    output = `${fallbackMessage}SEARCH: "${query}" | Results: ${totalResults} notes, ${totalMatches} matches | Page ${page}/${totalPages}\n\n`;
                 } else {
-                    output = `Found ${totalMatches} matches in ${totalResults} notes (showing page ${page} of ${totalPages}):\n\n`;
+                    output = `${fallbackMessage}Found ${totalMatches} matches in ${totalResults} notes (showing page ${page} of ${totalPages}):\n\n`;
                 }
 
                 // Results
@@ -498,6 +483,51 @@ export function configureMcpServerInstance(server: McpServer): void {
                         {
                             type: 'text',
                             text: `Failed to create note: ${
+                                error instanceof Error ? error.message : 'Unknown error'
+                            }`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+        }
+    );
+
+    // Tool: delete a note
+    server.tool(
+        'delete-note',
+        {
+            filename: z.string().describe('The filename of the note to delete (should end with .md)'),
+        },
+        async ({ filename }) => {
+            try {
+                if (!filename.endsWith('.md')) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: 'Filename must end with .md extension',
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+                await deleteNoteAPI(filename);
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: `Successfully deleted note: ${filename}`,
+                        },
+                    ],
+                };
+            } catch (error) {
+                console.error(`[MCP Tool: delete-note] Error deleting note ${filename}:`, error);
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: `Failed to delete note: ${
                                 error instanceof Error ? error.message : 'Unknown error'
                             }`,
                         },
