@@ -1,11 +1,22 @@
 .env
 
 # Node
-silverbullet-mcp-server/node_modules/
-silverbullet-mcp-server/dist/
+node_modules/
+dist/
 
-# Silverbullet space (if local)
+# npm
+npm-debug.log*
+
+# SilverBullet space (if local)
 space/
 
 # IDE specific
 .vscode/
+.idea/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml

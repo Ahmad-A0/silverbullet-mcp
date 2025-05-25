@@ -1,0 +1,23 @@
+services:
+  silverbullet:
+    image: silverbulletmd/silverbullet:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - SB_AUTH_TOKEN=${SB_AUTH_TOKEN}
+      - SB_FOLDER=/space
+    volumes:
+      - ./space:/space
+
+  silverbullet-mcp-server:
+    build: ./
+    ports:
+      - "4000:4000"
+    environment:
+      - SB_AUTH_TOKEN=${SB_AUTH_TOKEN} # For mcp-server to auth with SilverBullet API
+      - MCP_TOKEN=${MCP_TOKEN}         # For clients to auth with mcp-server
+      - SB_API_BASE_URL=http://silverbullet:3000 # For mcp-server to find SilverBullet
+      - PORT=4000
+    # No direct volume mount needed for /space if using API exclusively
+    depends_on:
+      - silverbullet
