@@ -27,7 +27,7 @@ export const logConfiguration = (): void => {
 };
 
 export const logStartupSuccess = (): void => {
-    console.log(`[STARTUP] ilverBullet MCP server (Express Stateful) listening on port ${PORT}`);
+    console.log(`[STARTUP] SilverBullet MCP server listening on port ${PORT}`);
     console.log(`[STARTUP] SilverBullet API base URL: ${SB_API_BASE_URL}`);
     console.log(`[STARTUP] MCP Authentication: ENABLED (MANDATORY)`);
     console.log(`[STARTUP] SilverBullet Authentication: ${SB_AUTH_TOKEN ? 'enabled' : 'disabled (SB_AUTH_TOKEN not set)'}`);

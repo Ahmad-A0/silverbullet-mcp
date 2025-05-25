@@ -2,6 +2,8 @@
 
 This project provides a Model Context Protocol (MCP) server that acts as a bridge to your [SilverBullet](https://silverbullet.md) instance. It enables Large Language Models (LLMs) and other MCP-compatible clients to interact with your SilverBullet notes and data by exposing them through standardized MCP `tools` and `resources`.
 
+![Retirement Prompt Demo](retirement-prompt.gif)
+
 The server is designed to be run via Docker Compose alongside your existing SilverBullet Docker container. It handles authentication and provides a secure way for external applications to access and manipulate your SilverBullet space.
 
 ## Project Structure
@@ -85,12 +87,14 @@ This MCP server requires token-based authentication. Configure your MCP client (
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://localhost:4000/mcp", // URL of this MCP server
+        "http://localhost:4000/mcp", 
+        "--transport",
+        "http-only",
         "--header",
-        "Authorization:Bearer ${MCP_SERVER_TOKEN}" // Note: no spaces around ':' for some clients
+        "Authorization:Bearer ${MCP_SERVER_TOKEN}" 
       ],
       "env": {
-        "MCP_SERVER_TOKEN": "your_actual_mcp_token_from_dotenv" // The MCP_TOKEN set in your .env file
+        "MCP_SERVER_TOKEN": "your_actual_mcp_token_from_dotenv"
       }
     }
   }
@@ -123,26 +127,6 @@ Replace `YOUR_MCP_TOKEN` with the actual value of the `MCP_TOKEN` environment va
 
 Consult your MCP client's documentation on how to configure connections to remote HTTP MCP servers, including how to send custom headers or append query parameters.
 
-## Development
+## Contributing
 
-To run the server locally for development without Docker:
-
-1.  **Install dependencies:**
-    ```bash
-    npm install
-    ```
-2.  **Compile TypeScript:**
-    ```bash
-    npm run build
-    ```
-3.  **Set environment variables** (e.g., in your shell or using a tool like `dotenv` directly in the code if preferred for local dev):
-    ```bash
-    export SB_AUTH_TOKEN="your_sb_token"
-    export MCP_TOKEN="your_mcp_token"
-    export SB_API_BASE_URL="http://localhost:3000" # If running SilverBullet locally
-    export PORT="4000"
-    ```
-4.  **Start the server:**
-    ```bash
-    npm start
-    ```
+Please refer to the contributing guidelines if you wish to contribute to this project. (Create a `CONTRIBUTING.md` if applicable).
