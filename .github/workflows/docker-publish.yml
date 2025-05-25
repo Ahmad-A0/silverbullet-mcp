@@ -1,4 +1,4 @@
-name: Docker
+name: Docker Release
 
 # This workflow uses actions that are not certified by GitHub.
 # They are provided by a third-party and are governed by
@@ -6,12 +6,19 @@ name: Docker
 # documentation.
 
 on:
-  schedule:
-    - cron: '17 21 * * *'
+  # Allow manual triggering of this workflow
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0 or v1.0.0-rc1). This will be used for the Git tag, GitHub Release, and Docker image tag.'
+        required: true
+        type: string
+
+  # Build on pushes to the main branch (for a 'main' tag)
   push:
     branches: [ "main" ]
-    # Publish semver tags as releases.
-    tags: [ 'v*.*.*' ]
+
+  # Build on pull requests to the main branch (for testing, no push)
   pull_request:
     branches: [ "main" ]
 
@@ -23,15 +30,13 @@ env:
 
 
 jobs:
-  build:
+  build-and-publish:
 
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
-      # This is used to complete the identity challenge
-      # with sigstore/fulcio when running outside of PRs.
-      id-token: write
+      contents: write # Needed to create GitHub Releases and tags
+      packages: write # Needed to publish Docker images to GHCR
+      id-token: write # Needed for OIDC with sigstore/fulcio
 
     steps:
       - name: Checkout repository
@@ -68,6 +73,17 @@ jobs:
         uses: docker/metadata-action@96383f45573cb7f253c731d3b3ab81c87ef81934 # v5.0.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # For manual workflow_dispatch: use the input version (e.g., v1.0.0)
+            type=raw,value=${{ github.event.inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            # Tag as 'latest' ONLY if it's a workflow_dispatch for a non-prerelease version (doesn't contain '-')
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && !contains(github.event.inputs.version, '-') }}
+
+            # For pushes to the main branch (default branch): tag as 'main'
+            type=raw,value=main,enable=${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+            # For pull requests: tag as pr-<pr_number> (for building, not pushing)
+            type=ref,event=pr
 
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
@@ -84,11 +100,11 @@ jobs:
 
       # Sign the resulting Docker image digest except on PRs.
       # This will only write to the public Rekor transparency log when the Docker
-      # repository is public to avoid leaking data.  If you would like to publish
+      # repository is public to avoid leaking data. If you would like to publish
       # transparency data even for private images, pass --force to cosign below.
       # https://github.com/sigstore/cosign
       - name: Sign the published Docker image
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && steps.build-and-push.outputs.digest != '' }}
         env:
           # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
           TAGS: ${{ steps.meta.outputs.tags }}
@@ -96,3 +112,26 @@ jobs:
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+      # Create a GitHub Release when triggered manually via workflow_dispatch
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
+          # Construct image URLs for release notes
+          IMAGE_URL_WITH_TAG: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}"
+          IMAGE_URL_WITH_DIGEST: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}"
+          # Determine if it's a pre-release based on the version string
+          IS_PRERELEASE: ${{ contains(github.event.inputs.version, '-') }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Release $VERSION" \
+            --notes "Automated release for version $VERSION.
+
+          Docker Image:
+          - Tag: \`$IMAGE_URL_WITH_TAG\`
+          - Digest: \`$IMAGE_URL_WITH_DIGEST\`
+          " \
+            ${{ env.IS_PRERELEASE == 'true' && '--prerelease' || '' }} # Add --prerelease flag if version indicates it
