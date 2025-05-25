@@ -5,28 +5,10 @@ This project provides a Model Context Protocol (MCP) server that acts as a bridg
 The server is designed to be run via Docker Compose alongside your existing SilverBullet Docker container. It handles authentication and provides a secure way for external applications to access and manipulate your SilverBullet space.
 
 ![Retirement Prompt Demo](retirement-prompt.gif)
+> Asking Claude to create a retirement projection, based on my notes.
 
-## Project Structure
 
-```
-.
-├── .env.example             # Example environment variables
-├── .gitignore               # Files and directories to ignore in git
-├── docker-compose.yml       # Docker Compose configuration for running the services
-├── Dockerfile               # Dockerfile for building the MCP server image
-├── package-lock.json        # Exact versions of dependencies
-├── package.json             # Project metadata and dependencies
-├── tsconfig.json            # TypeScript compiler options
-├── src/                     # Source code directory
-│   ├── cache.ts             # Caching mechanisms (if any)
-│   ├── config.ts            # Configuration loading
-│   ├── mcp-server.ts        # MCP server logic implementation
-│   ├── middleware.ts        # Express middleware
-│   ├── server.ts            # Express server setup and main application entry point
-│   ├── silverbullet-api.ts  # Client for interacting with SilverBullet API
-│   └── types.ts             # TypeScript type definitions
-└── README.md                # This file
-```
+
 
 ## Prerequisites
 
@@ -126,3 +108,5 @@ Replace `YOUR_MCP_TOKEN` with the actual value of the `MCP_TOKEN` environment va
 **Endpoint**: `http://localhost:4000/mcp` (or as configured by `PORT` if not using Docker Compose defaults).
 
 Consult your MCP client's documentation on how to configure connections to remote HTTP MCP servers, including how to send custom headers or append query parameters.
+
+
