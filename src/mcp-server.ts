@@ -4,7 +4,73 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { z } from 'zod';
 import { listNotesAPI, readNoteAPI, writeNoteAPI, deleteNoteAPI } from './silverbullet-api.js';
 import { getCachedNoteContent } from './cache.js';
-import type { SearchResult, SearchMatch } from './types.js';
+import type { SearchResult, SearchMatch, NoteInfo } from './types.js';
+
+// Utility function to calculate Levenshtein distance between two strings
+function levenshteinDistance(str1: string, str2: string): number {
+    const matrix = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(null));
+    
+    for (let i = 0; i <= str1.length; i++) {
+        matrix[0][i] = i;
+    }
+    
+    for (let j = 0; j <= str2.length; j++) {
+        matrix[j][0] = j;
+    }
+    
+    for (let j = 1; j <= str2.length; j++) {
+        for (let i = 1; i <= str1.length; i++) {
+            const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
+            matrix[j][i] = Math.min(
+                matrix[j][i - 1] + 1, // deletion
+                matrix[j - 1][i] + 1, // insertion
+                matrix[j - 1][i - 1] + indicator // substitution
+            );
+        }
+    }
+    
+    return matrix[str2.length][str1.length];
+}
+
+// Utility function to find similar note names using fuzzy matching
+function findSimilarNoteNames(targetName: string, availableNotes: NoteInfo[], maxResults: number = 5): string[] {
+    const normalizeForComparison = (name: string): string => {
+        // Remove .md extension and normalize case/spaces
+        return name.replace(/\.md$/i, '').toLowerCase().replace(/[-_]/g, ' ');
+    };
+    
+    const normalizedTarget = normalizeForComparison(targetName);
+    
+    const similarities = availableNotes.map(note => {
+        const normalizedNote = normalizeForComparison(note.name);
+        const distance = levenshteinDistance(normalizedTarget, normalizedNote);
+        const maxLength = Math.max(normalizedTarget.length, normalizedNote.length);
+        const similarity = maxLength > 0 ? (maxLength - distance) / maxLength : 0;
+        
+        // Boost score for substring matches
+        if (normalizedNote.includes(normalizedTarget) || normalizedTarget.includes(normalizedNote)) {
+            return { note: note.name, similarity: similarity + 0.3 };
+        }
+        
+        return { note: note.name, similarity };
+    });
+    
+    // Filter out very low similarity matches (< 0.4) and sort by similarity
+    return similarities
+        .filter(item => item.similarity >= 0.4)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, maxResults)
+        .map(item => item.note);
+}
+
+// Utility function to check if an error is a "not found" error
+function isNotFoundError(error: unknown): boolean {
+    if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+        return message.includes('404') || message.includes('not found');
+    }
+    return false;
+}
 
 export function configureMcpServerInstance(server: McpServer): void {
     // Resource: list all notes
@@ -472,8 +538,9 @@ export function configureMcpServerInstance(server: McpServer): void {
         'read-note',
         {
             filename: z.string().describe('The filename of the note to read'),
+            suggestSimilar: z.boolean().default(true).describe('Whether to suggest similar note names if the note is not found'),
         },
-        async ({ filename }) => {
+        async ({ filename, suggestSimilar }) => {
             try {
                 const content = await readNoteAPI(filename);
                 return {
@@ -486,6 +553,32 @@ export function configureMcpServerInstance(server: McpServer): void {
                 };
             } catch (error) {
                 console.error(`[MCP Tool: read-note] Error reading note ${filename}:`, error);
+                
+                // If enabled, try to suggest similar note names for "not found" errors
+                if (suggestSimilar && isNotFoundError(error)) {
+                    try {
+                        const availableNotes = await listNotesAPI();
+                        const suggestions = findSimilarNoteNames(filename, availableNotes);
+                        
+                        if (suggestions.length > 0) {
+                            const suggestionText = suggestions.map(note => `  • ${note}`).join('\n');
+                            return {
+                                content: [
+                                    {
+                                        type: 'text',
+                                        text: `Note "${filename}" not found. Did you mean one of these?\n\n${suggestionText}`,
+                                    },
+                                ],
+                                isError: true,
+                            };
+                        }
+                    } catch (searchError) {
+                        console.error(`[MCP Tool: read-note] Error during similarity search:`, searchError);
+                        // Fall through to original error handling
+                    }
+                }
+                
+                // Original error handling for non-404 errors or when suggestions are disabled/failed
                 return {
                     content: [
                         {
