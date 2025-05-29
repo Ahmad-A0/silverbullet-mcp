@@ -59,31 +59,85 @@ export function configureMcpServerInstance(server: McpServer): void {
         }
     );
 
-    // Tool: update a note
+    // Tool: search and replace in a note
     server.tool(
-        'update-note',
+        'search-replace-note',
         {
-            filename: z.string().describe('The filename of the note to update'),
-            content: z.string().describe('The new content for the note'),
+            filename: z.string().describe('The filename of the note to modify'),
+            searchPattern: z.string().describe('The text or regex pattern to search for'),
+            replaceText: z.string().describe('The text to replace matches with'),
+            useRegex: z.boolean().default(false).describe('Whether to treat searchPattern as a regex'),
+            caseSensitive: z.boolean().default(false).describe('Whether search should be case-sensitive'),
+            replaceAll: z.boolean().default(true).describe('Whether to replace all matches or just the first one'),
         },
-        async ({ filename, content }) => {
+        async ({ filename, searchPattern, replaceText, useRegex, caseSensitive, replaceAll }) => {
             try {
-                await writeNoteAPI(filename, content);
+                // Read the current content
+                const content = await readNoteAPI(filename);
+                
+                let searchRegex: RegExp;
+                let regexInvalidFallback = false;
+
+                if (useRegex) {
+                    try {
+                        const flags = caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i');
+                        searchRegex = new RegExp(searchPattern, flags);
+                    } catch (error) {
+                        // If regex is invalid, escape special characters and treat as literal
+                        const escapedPattern = searchPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const flags = caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i');
+                        searchRegex = new RegExp(escapedPattern, flags);
+                        regexInvalidFallback = true;
+                    }
+                } else {
+                    // Escape the search pattern for literal matching
+                    const escapedPattern = searchPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const flags = caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i');
+                    searchRegex = new RegExp(escapedPattern, flags);
+                }
+
+                // Count matches before replacement
+                const matches = content.match(searchRegex);
+                const matchCount = matches ? matches.length : 0;
+
+                if (matchCount === 0) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: `No matches found for "${searchPattern}" in ${filename}`,
+                            },
+                        ],
+                    };
+                }
+
+                // Perform replacement
+                const newContent = content.replace(searchRegex, replaceText);
+                
+                // Write back the modified content
+                await writeNoteAPI(filename, newContent);
+
+                let resultMessage = `Successfully replaced ${matchCount} occurrence${matchCount === 1 ? '' : 's'} of "${searchPattern}" in ${filename}`;
+                
+                if (regexInvalidFallback) {
+                    resultMessage += '\nNote: Invalid regex pattern was treated as literal text.';
+                }
+
                 return {
                     content: [
                         {
                             type: 'text',
-                            text: `Successfully updated note: ${filename}`,
+                            text: resultMessage,
                         },
                     ],
                 };
             } catch (error) {
-                console.error(`[MCP Tool: update-note] Error updating note ${filename}:`, error);
+                console.error(`[MCP Tool: search-replace-note] Error modifying note ${filename}:`, error);
                 return {
                     content: [
                         {
                             type: 'text',
-                            text: `Failed to update note: ${
+                            text: `Failed to modify note: ${
                                 error instanceof Error ? error.message : 'Unknown error'
                             }`,
                         },
@@ -453,8 +507,9 @@ export function configureMcpServerInstance(server: McpServer): void {
         {
             filename: z.string().describe('The filename for the new note (should end with .md)'),
             content: z.string().describe('The content for the new note'),
+            overwrite: z.boolean().default(false).describe('Whether to overwrite existing note if it exists'),
         },
-        async ({ filename, content }) => {
+        async ({ filename, content, overwrite }) => {
             try {
                 if (!filename.endsWith('.md')) {
                     return {
@@ -467,12 +522,34 @@ export function configureMcpServerInstance(server: McpServer): void {
                         isError: true,
                     };
                 }
+
+                // Check if note exists if overwrite is false
+                if (!overwrite) {
+                    try {
+                        await readNoteAPI(filename);
+                        // If we get here, the note exists
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: `Note ${filename} already exists. Use overwrite=true to replace it.`,
+                                },
+                            ],
+                            isError: true,
+                        };
+                    } catch (error) {
+                        // Note doesn't exist, which is what we want for creating
+                    }
+                }
+
                 await writeNoteAPI(filename, content);
+                
+                const action = overwrite ? 'created/updated' : 'created';
                 return {
                     content: [
                         {
                             type: 'text',
-                            text: `Successfully created note: ${filename}`,
+                            text: `Successfully ${action} note: ${filename}`,
                         },
                     ],
                 };
