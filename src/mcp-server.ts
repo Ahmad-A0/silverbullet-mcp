@@ -5,72 +5,12 @@ import { z } from 'zod';
 import { listNotesAPI, readNoteAPI, writeNoteAPI, deleteNoteAPI } from './silverbullet-api.js';
 import { getCachedNoteContent } from './cache.js';
 import type { SearchResult, SearchMatch, NoteInfo } from './types.js';
-
-// Utility function to calculate Levenshtein distance between two strings
-function levenshteinDistance(str1: string, str2: string): number {
-    const matrix = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(null));
-    
-    for (let i = 0; i <= str1.length; i++) {
-        matrix[0][i] = i;
-    }
-    
-    for (let j = 0; j <= str2.length; j++) {
-        matrix[j][0] = j;
-    }
-    
-    for (let j = 1; j <= str2.length; j++) {
-        for (let i = 1; i <= str1.length; i++) {
-            const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
-            matrix[j][i] = Math.min(
-                matrix[j][i - 1] + 1, // deletion
-                matrix[j - 1][i] + 1, // insertion
-                matrix[j - 1][i - 1] + indicator // substitution
-            );
-        }
-    }
-    
-    return matrix[str2.length][str1.length];
-}
-
-// Utility function to find similar note names using fuzzy matching
-function findSimilarNoteNames(targetName: string, availableNotes: NoteInfo[], maxResults: number = 5): string[] {
-    const normalizeForComparison = (name: string): string => {
-        // Remove .md extension and normalize case/spaces
-        return name.replace(/\.md$/i, '').toLowerCase().replace(/[-_]/g, ' ');
-    };
-    
-    const normalizedTarget = normalizeForComparison(targetName);
-    
-    const similarities = availableNotes.map(note => {
-        const normalizedNote = normalizeForComparison(note.name);
-        const distance = levenshteinDistance(normalizedTarget, normalizedNote);
-        const maxLength = Math.max(normalizedTarget.length, normalizedNote.length);
-        const similarity = maxLength > 0 ? (maxLength - distance) / maxLength : 0;
-        
-        // Boost score for substring matches
-        if (normalizedNote.includes(normalizedTarget) || normalizedTarget.includes(normalizedNote)) {
-            return { note: note.name, similarity: similarity + 0.3 };
-        }
-        
-        return { note: note.name, similarity };
-    });
-    
-    // Filter out very low similarity matches (< 0.4) and sort by similarity
-    return similarities
-        .filter(item => item.similarity >= 0.4)
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, maxResults)
-        .map(item => item.note);
-}
-
-// Utility function to check if an error is a "not found" error
-function isNotFoundError(error: unknown): boolean {
-    if (error instanceof Error) {
-        const message = error.message.toLowerCase();
-        return message.includes('404') || message.includes('not found');
-    }
-    return false;
-}
+import {
+    NoteErrorHandler,
+    NoteResolver,
+    ContentManager,
+    type MultiNoteRequest
+} from './note-utils.js';
 
 export function configureMcpServerInstance(server: McpServer): void {
     // Resource: list all notes
@@ -121,6 +61,135 @@ export function configureMcpServerInstance(server: McpServer): void {
             } catch (error) {
                 console.error(`[MCP Resource: note] Error reading note ${filename}:`, error);
                 throw error;
+            }
+        }
+    );
+
+    // Tool: read multiple notes with flexible input options
+    server.tool(
+        'read-multiple-notes',
+        {
+            filenames: z
+                .array(z.string())
+                .optional()
+                .describe('Array of specific note filenames to read (e.g., ["note1.md", "note2.md"])'),
+            namePattern: z
+                .string()
+                .optional()
+                .describe('Regex pattern to match note names (e.g., "project.*" for notes starting with "project")'),
+            includeContent: z
+                .boolean()
+                .default(true)
+                .describe('Whether to include full note content in response'),
+            includeMetadata: z
+                .boolean()
+                .default(true)
+                .describe('Whether to include file metadata (size, permissions, etc.)'),
+            maxResults: z
+                .number()
+                .default(50)
+                .describe('Maximum number of notes to return (prevents overload)'),
+            enableCaching: z
+                .boolean()
+                .default(true)
+                .describe('Whether to use content caching for better performance'),
+            format: z
+                .enum(['structured', 'concatenated', 'summary'])
+                .default('structured')
+                .describe('Output format: structured (detailed), concatenated (combined content), or summary (previews only)'),
+        },
+        async ({ filenames, namePattern, includeContent, includeMetadata, maxResults, enableCaching, format }) => {
+            try {
+                // Validate input
+                if (!filenames && !namePattern) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: 'Either filenames array or namePattern must be provided',
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+
+                // Build request
+                const request: MultiNoteRequest = {
+                    filenames,
+                    namePattern,
+                    includeContent,
+                    includeMetadata,
+                    maxResults,
+                    enableCaching,
+                    format,
+                };
+
+                // Get available notes for validation and metadata
+                const availableNotes = await listNotesAPI();
+
+                // Resolve note filenames
+                const resolvedFilenames = await NoteResolver.resolveNotes(request);
+
+                if (resolvedFilenames.length === 0) {
+                    let message = 'No notes found';
+                    if (namePattern) {
+                        message += ` matching pattern "${namePattern}"`;
+                    }
+                    if (filenames && filenames.length > 0) {
+                        message += ` from the specified list`;
+                        
+                        // Suggest similar notes for the first filename
+                        const suggestions = await NoteErrorHandler.findSimilarNoteNames(
+                            filenames[0],
+                            availableNotes
+                        );
+                        if (suggestions.length > 0) {
+                            message += `\n\nDid you mean one of these?\n${suggestions.map(s => `  • ${s}`).join('\n')}`;
+                        }
+                    }
+
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: message,
+                            },
+                        ],
+                    };
+                }
+
+                // Read notes in batch
+                const response = await ContentManager.batchReadNotes(
+                    resolvedFilenames,
+                    request,
+                    availableNotes
+                );
+
+                // Format response
+                const formattedOutput = ContentManager.formatResponse(response, format);
+
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: formattedOutput,
+                        },
+                    ],
+                };
+
+            } catch (error) {
+                console.error(`[MCP Tool: read-multiple-notes] Error:`, error);
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: `Failed to read multiple notes: ${
+                                error instanceof Error ? error.message : 'Unknown error'
+                            }`,
+                        },
+                    ],
+                    isError: true,
+                };
             }
         }
     );
@@ -340,7 +409,7 @@ export function configureMcpServerInstance(server: McpServer): void {
 
                     // Search in title/filename
                     if (searchType === 'title' || searchType === 'both') {
-                        const titleMatches = [...note.name.matchAll(searchRegex)];
+                        const titleMatches = Array.from(note.name.matchAll(searchRegex));
                         if (titleMatches.length > 0) {
                             noteResults.matches.push({
                                 type: 'title',
@@ -358,7 +427,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                             const lines = content.split('\n');
 
                             lines.forEach((line, lineIndex) => {
-                                const lineMatches = [...line.matchAll(searchRegex)];
+                                const lineMatches = Array.from(line.matchAll(searchRegex));
                                 if (lineMatches.length > 0) {
                                     // Get context lines only if not in concise mode or if contextLines > 0
                                     let contextText = '';
@@ -555,10 +624,10 @@ export function configureMcpServerInstance(server: McpServer): void {
                 console.error(`[MCP Tool: read-note] Error reading note ${filename}:`, error);
                 
                 // If enabled, try to suggest similar note names for "not found" errors
-                if (suggestSimilar && isNotFoundError(error)) {
+                if (suggestSimilar && NoteErrorHandler.isNotFoundError(error)) {
                     try {
                         const availableNotes = await listNotesAPI();
-                        const suggestions = findSimilarNoteNames(filename, availableNotes);
+                        const suggestions = await NoteErrorHandler.findSimilarNoteNames(filename, availableNotes);
                         
                         if (suggestions.length > 0) {
                             const suggestionText = suggestions.map(note => `  • ${note}`).join('\n');
@@ -583,9 +652,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                     content: [
                         {
                             type: 'text',
-                            text: `Failed to read note: ${
-                                error instanceof Error ? error.message : 'Unknown error'
-                            }`,
+                            text: NoteErrorHandler.formatError(error, 'Failed to read note'),
                         },
                     ],
                     isError: true,
