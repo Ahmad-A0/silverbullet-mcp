@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ahmad-a0-silverbullet-mcp-badge.png)](https://mseep.ai/app/ahmad-a0-silverbullet-mcp)
+
 # SilverBullet MCP Server
 
 This project provides a Model Context Protocol (MCP) server that acts as a bridge to your [SilverBullet](https://silverbullet.md) instance. It enables Large Language Models (LLMs) and other MCP-compatible clients to interact with your SilverBullet notes and data by exposing them through standardized MCP `tools` and `resources`.
