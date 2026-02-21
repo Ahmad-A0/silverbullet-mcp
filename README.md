@@ -7,6 +7,10 @@ The server is designed to be run via Docker Compose alongside your existing Silv
 ![Retirement Prompt Demo](retirement-prompt.gif)
 > Asking Claude to create a retirement projection, based on my notes.
 
+<a href="https://glama.ai/mcp/servers/@Ahmad-A0/silverbullet-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@Ahmad-A0/silverbullet-mcp/badge" alt="SilverBullet Server MCP server" />
+</a>
+
 
 
 
@@ -108,5 +112,3 @@ Replace `YOUR_MCP_TOKEN` with the actual value of the `MCP_TOKEN` environment va
 **Endpoint**: `http://localhost:4000/mcp` (or as configured by `PORT` if not using Docker Compose defaults).
 
 Consult your MCP client's documentation on how to configure connections to remote HTTP MCP servers, including how to send custom headers or append query parameters.
-
-
