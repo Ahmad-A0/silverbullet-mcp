@@ -4,6 +4,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { z } from 'zod';
 import { listNotesAPI, readNoteAPI, writeNoteAPI, deleteNoteAPI } from './silverbullet-api.js';
 import { getCachedNoteContent } from './cache.js';
+import { escapeReplacementText } from './replacement-utils.js';
 import type { SearchResult, SearchMatch, NoteInfo } from './types.js';
 import {
     NoteErrorHandler,
@@ -250,7 +251,10 @@ export function configureMcpServerInstance(server: McpServer): void {
                 }
 
                 // Perform replacement
-                const newContent = content.replace(searchRegex, replaceText);
+                // Escape $ in replacement text to prevent JS String.replace() special sequences
+                // ($&, $', $`, $1-$9) from causing unintended behavior or file corruption
+                const safeReplaceText = escapeReplacementText(replaceText);
+                const newContent = content.replace(searchRegex, safeReplaceText);
                 
                 // Write back the modified content
                 await writeNoteAPI(filename, newContent);
