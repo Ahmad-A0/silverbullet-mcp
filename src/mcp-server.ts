@@ -18,15 +18,14 @@ export function configureMcpServerInstance(server: McpServer): void {
     server.registerResource(
         'note',
         new ResourceTemplate('sb-note://{filename}', {
+            // Return an empty resource list.  The full vault (2,500+ notes) is
+            // far too large to enumerate via resources/list on every client
+            // connect — it produces a multi-MB payload through the SSE/stdio
+            // transport.  Clients should use the 'list-notes' tool for
+            // discovery instead.  The resource template still works for
+            // reading individual notes by URI.
             list: async () => {
-                const notesData = await listNotesAPI();
-                const result = {
-                    resources: notesData.map((n) => ({
-                        uri: `sb-note://${encodeURIComponent(n.name)}`,
-                        name: n.name,
-                    })),
-                };
-                return result;
+                return { resources: [] };
             },
         }),
         {
