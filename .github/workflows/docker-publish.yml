@@ -21,7 +21,11 @@ env:
   PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
+  tests:
+    uses: ./.github/workflows/test.yml
+
   build-and-publish:
+    needs: tests
     runs-on: ubuntu-latest
     permissions:
       contents: write

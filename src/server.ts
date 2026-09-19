@@ -1,177 +1,106 @@
-// Main Express server for SilverBullet MCP
-
+// Stateful Streamable HTTP endpoint. Each session owns its protocol and transport.
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { PORT, validateConfiguration, logConfiguration, logStartupSuccess } from './config.js';
 import { mcpAuthMiddleware } from './middleware.js';
 import { configureMcpServerInstance } from './mcp-server.js';
 
+const { version } = require('../package.json') as { version: string };
 const app = express();
 app.use(express.json());
+interface Session { transport: StreamableHTTPServerTransport; server: McpServer }
+const sessions = new Map<string, Session>();
 
-// Map to store transports by session ID
-const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
-// Map to store MCP server instances by session ID
-const mcpServers: { [sessionId: string]: McpServer } = {};
-
-// Default route - no authentication required
-app.get('/', (req, res) => {
-    res.json({
-        service: 'SilverBullet MCP Server',
-        version: '0.1.0',
-        status: 'running',
-        authentication: 'required for /mcp routes',
-        timestamp: new Date().toISOString(),
-    });
+app.get('/', (_req, res) => {
+    res.json({ service: 'SilverBullet MCP Server', version, status: 'running',
+        authentication: 'required for /mcp routes', timestamp: new Date().toISOString() });
 });
-
-// Apply auth middleware to all /mcp routes only
 app.use('/mcp', mcpAuthMiddleware);
 
-// Handle POST requests for client-to-server communication
-app.post('/mcp', async (req, res) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    
-    let transport: StreamableHTTPServerTransport;
-    let mcpServer: McpServer;
+function sessionError(req: express.Request, res: express.Response, status: number): void {
+    res.status(status).json({ jsonrpc: '2.0', id: req.body?.id ?? null,
+        error: { code: -32000, message: status === 404
+            ? 'Session not found. Initialize a new session without a session ID.'
+            : 'Missing session ID. Initialize a session first.' } });
+}
 
-    if (sessionId && transports[sessionId] && mcpServers[sessionId]) {
-        transport = transports[sessionId];
-        mcpServer = mcpServers[sessionId];
-    } else {
-        // Create new session
-        const newSessionId = randomUUID();
+function createSession(): Session {
+    const server = new McpServer({ name: 'SilverBullet MCP', version });
+    const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: randomUUID,
+        onsessioninitialized: id => { sessions.set(id, { server, transport }); },
+    });
+    configureMcpServerInstance(server);
+    // Protocol owns transport.onclose. Its public hook runs after protocol cleanup.
+    server.server.onclose = () => {
+        if (transport.sessionId) sessions.delete(transport.sessionId);
+    };
+    return { server, transport };
+}
 
-        transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => newSessionId,
-            onsessioninitialized: (sId) => {
-                transports[sId] = transport;
-                mcpServers[sId] = mcpServer;
-            },
-        });
-
-        mcpServer = new McpServer({
-            name: 'SilverBullet MCP',
-            version: '0.1.0',
-        });
-        configureMcpServerInstance(mcpServer);
-
-        transport.onclose = () => {
-            if (transport.sessionId) {
-                delete transports[transport.sessionId];
-                delete mcpServers[transport.sessionId];
-                mcpServer.close();
+app.all('/mcp', async (req, res) => {
+    if (!['POST', 'GET', 'DELETE'].includes(req.method)) {
+        res.setHeader('Allow', 'POST, GET, DELETE');
+        res.status(405).end();
+        return;
+    }
+    const sessionId = req.get('mcp-session-id');
+    let session = sessionId ? sessions.get(sessionId) : undefined;
+    let fresh = false;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    try {
+        if (sessionId && !session) {
+            sessionError(req, res, 404);
+            return;
+        }
+        if (!session) {
+            if (req.method !== 'POST' || !isInitializeRequest(req.body)) {
+                sessionError(req, res, 400);
+                return;
             }
-        };
-
-        await mcpServer.connect(transport);
-    }
-
-    try {
-        await transport.handleRequest(req, res, req.body);
+            session = createSession();
+            fresh = true;
+            await session.server.connect(session.transport);
+        }
+        if (req.method === 'GET') {
+            heartbeat = setInterval(() => {
+                if (!res.writableEnded && res.getHeader('content-type')?.toString().includes('text/event-stream')) {
+                    res.write(': heartbeat\n\n');
+                }
+            }, 30_000);
+            heartbeat.unref();
+            const clearHeartbeat = () => clearInterval(heartbeat);
+            res.once('close', clearHeartbeat);
+            res.once('error', clearHeartbeat);
+        }
+        await session.transport.handleRequest(req, res, req.method === 'POST' ? req.body : undefined);
     } catch (error) {
-        console.error(`[POST /mcp] Error handling MCP request:`, error);
+        console.error(`[${req.method} /mcp] Request failed:`, error);
+        if (fresh && session) await session.server.close().catch(closeError => console.error('Session cleanup failed:', closeError));
         if (!res.headersSent) {
-            res.status(500).json({
-                jsonrpc: '2.0',
-                error: {
-                    code: -32603,
-                    message: 'Internal server error during request handling.',
-                },
-                id: req.body?.id || null,
-            });
-        }
-    }
-});
-
-// Reusable handler for GET and DELETE requests
-const handleSessionRequest = async (
-    req: express.Request,
-    res: express.Response
-) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-    if (!sessionId || !transports[sessionId]) {
-        res.status(400).send('Invalid or missing session ID');
-        return;
-    }
-
-    const transport = transports[sessionId];
-    try {
-        await transport.handleRequest(req, res);
-    } catch (error) {
-        console.error(`[handleSessionRequest] Error handling session event:`, error);
-        if (!res.headersSent) {
-            res.status(500).send('Internal server error during session event handling.');
-        } else {
-            res.end();
-        }
-    }
-};
-
-// Handle GET requests for server-to-client notifications via SSE
-app.get('/mcp', (req, res) => {
-    handleSessionRequest(req, res);
-
-    // Send periodic SSE comment heartbeats to keep the connection alive.
-    // Lines starting with ':' are SSE comments — ignored by clients but
-    // prevent idle-timeout disconnects from proxies and HTTP clients.
-    const heartbeat = setInterval(() => {
-        if (!res.writableEnded) {
-            res.write(': heartbeat\n\n');
-        } else {
-            clearInterval(heartbeat);
-        }
-    }, 30_000);
-    res.on('close', () => clearInterval(heartbeat));
-    res.on('error', () => clearInterval(heartbeat));
-});
-
-// Handle DELETE requests for session termination
-app.delete('/mcp', async (req: express.Request, res: express.Response) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-    if (!sessionId || !transports[sessionId]) {
-        res.status(400).send('Invalid or missing session ID for DELETE');
-        return;
-    }
-
-    const transport = transports[sessionId];
-    const mcpServer = mcpServers[sessionId];
-
-    try {
-        await transport.handleRequest(req, res);
-    } catch (error) {
-        console.error(`[DELETE /mcp] Error during DELETE handling:`, error);
-        if (!res.headersSent) {
-            res.status(500).send('Internal server error during session termination.');
-        }
+            res.status(500).json({ jsonrpc: '2.0', id: req.body?.id ?? null,
+                error: { code: -32603, message: 'Internal server error.' } });
+        } else if (!res.writableEnded) res.end();
     } finally {
-        if (mcpServer) {
-            mcpServer.close();
+        // Invalid initialize requests must not leave a half-connected protocol behind.
+        if (fresh && session && (!session.transport.sessionId || res.statusCode >= 400)) {
+            await session.server.close().catch(closeError => console.error('Session cleanup failed:', closeError));
         }
-        if (transport) {
-            transport.close();
-        }
-        if (sessionId) {
-            delete transports[sessionId];
-            delete mcpServers[sessionId];
-        }
-        if (!res.headersSent) {
-            res.status(204).send();
-        } else if (!res.writableEnded) {
-            res.end();
-        }
+        if (res.writableEnded) clearInterval(heartbeat);
     }
 });
 
-// Validate configuration and start server
 validateConfiguration();
 logConfiguration();
+const listener = app.listen(PORT, logStartupSuccess);
 
-app.listen(PORT, () => {
-    logStartupSuccess();
-});
+async function shutdown(): Promise<void> {
+    listener.close();
+    await Promise.allSettled([...sessions.values()].map(session => session.server.close()));
+    listener.closeAllConnections();
+}
+process.once('SIGTERM', () => { void shutdown(); });
+process.once('SIGINT', () => { void shutdown(); });

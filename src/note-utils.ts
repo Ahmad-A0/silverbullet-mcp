@@ -8,6 +8,7 @@ import type { NoteInfo } from './types.js';
 export interface MultiNoteRequest {
     filenames?: string[];
     namePattern?: string;
+    contentLimit?: number;
     includeContent?: boolean;
     includeMetadata?: boolean;
     maxResults?: number;
@@ -21,6 +22,8 @@ export interface NoteResult {
     size?: number;
     lastModified?: number;
     content?: string;
+    truncated?: boolean;
+    totalCharacters?: number;
     contentPreview?: string;
     error?: string;
 }
@@ -136,14 +139,7 @@ export class NoteResolver {
                     resolvedFilenames.add(note.name);
                 }
             } catch (error) {
-                console.warn(`[NoteResolver] Invalid regex pattern: ${request.namePattern}`, error);
-                // Treat as literal string search if regex fails
-                const matchedNotes = allNotes.filter(note => 
-                    note.name.toLowerCase().includes(request.namePattern!.toLowerCase())
-                );
-                for (const note of matchedNotes) {
-                    resolvedFilenames.add(note.name);
-                }
+                throw new Error(`Invalid namePattern regex: ${error instanceof Error ? error.message : String(error)}`);
             }
         }
 
@@ -199,13 +195,14 @@ export class ContentManager {
                         : readNoteAPI(filename)
                     );
                     
-                    if (request.format === 'summary') {
-                        result.contentPreview = content.length > 200 
-                            ? content.substring(0, 197) + '...'
-                            : content;
-                    } else {
-                        result.content = content;
-                    }
+                    const limit = request.format === 'summary'
+                        ? Math.min(200, request.contentLimit ?? 50_000)
+                        : request.contentLimit ?? 50_000;
+                    const excerpt = content.slice(0, limit);
+                    result.truncated = excerpt.length < content.length;
+                    result.totalCharacters = content.length;
+                    if (request.format === 'summary') result.contentPreview = excerpt;
+                    else result.content = excerpt;
 
                     // Add metadata if requested
                     if (request.includeMetadata !== false) {
@@ -274,6 +271,7 @@ export class ContentManager {
                 output += `**Preview**: ${note.contentPreview}\n`;
             }
             
+            if (note.truncated) output += '\n[Content truncated; use read-note to continue]\n';
             output += '\n---\n\n';
         });
 
@@ -290,7 +288,7 @@ export class ContentManager {
         response.notes
             .filter(note => note.content && !note.error)
             .forEach(note => {
-                output += `# ${note.filename}\n\n${note.content}\n\n---\n\n`;
+                output += `# ${note.filename}\n\n${note.content}${note.truncated ? '\n[Content truncated; use read-note to continue]' : ''}\n\n---\n\n`;
             });
 
         return output;
@@ -311,6 +309,7 @@ export class ContentManager {
                 output += `\n   ⚠️ ${note.error}`;
             }
             
+            if (note.truncated) output += '\n[Content truncated; use read-note to continue]';
             output += '\n\n';
         });
 
