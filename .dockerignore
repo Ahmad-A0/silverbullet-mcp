@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+dist
+space
+coverage
+openrouter-provider-routing.md

@@ -1,6 +1,6 @@
 services:
   silverbullet:
-    image: ghcr.io/silverbulletmd/silverbullet:v2
+    image: ${SILVERBULLET_IMAGE:-ghcr.io/silverbulletmd/silverbullet:2.11.0-slim}
     ports:
       - "3000:3000"
     environment:
@@ -17,7 +17,7 @@ services:
       - SB_AUTH_TOKEN=${SB_AUTH_TOKEN} # For mcp-server to auth with SilverBullet API
       - MCP_TOKEN=${MCP_TOKEN}         # For clients to auth with mcp-server
       - DEBUG_REQUESTS=${DEBUG_REQUESTS}
-      - SB_API_BASE_URL=http://silverbullet:3000 # For mcp-server to find SilverBullet
+      - SB_API_BASE_URL=${SB_API_BASE_URL:-http://silverbullet:3000} # For mcp-server to find SilverBullet
       - PORT=4000
     # No direct volume mount needed for /space if using API exclusively
     depends_on:

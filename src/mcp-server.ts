@@ -2,7 +2,8 @@
 
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { listNotesAPI, readNoteAPI, writeNoteAPI, deleteNoteAPI } from './silverbullet-api.js';
+import { ListResourcesRequestSchema, McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { listNotesAPI, readNoteAPI, readNoteSnapshotAPI, writeNoteAPI, deleteNoteAPI, SilverBulletAPIError } from './silverbullet-api.js';
 import { getCachedNoteContent } from './cache.js';
 import type { SearchResult, SearchMatch, NoteInfo } from './types.js';
 import {
@@ -12,22 +13,18 @@ import {
     type MultiNoteRequest
 } from './note-utils.js';
 import { URL } from 'node:url';
+import { registerEditNote } from './edit-note.js';
+import { outputSchemas } from './tool-schemas.js';
+import { toolResult } from './tool-results.js';
 
 export function configureMcpServerInstance(server: McpServer): void {
+    registerEditNote(server);
     // Resource: read a single note or list all notes
     server.registerResource(
         'note',
         new ResourceTemplate('sb-note://{filename}', {
-            list: async () => {
-                const notesData = await listNotesAPI();
-                const result = {
-                    resources: notesData.map((n) => ({
-                        uri: `sb-note://${encodeURIComponent(n.name)}`,
-                        name: n.name,
-                    })),
-                };
-                return result;
-            },
+            // Listing is handled below with MCP cursor pagination.
+            list: undefined,
         }),
         {
             title: 'Note',
@@ -62,10 +59,12 @@ export function configureMcpServerInstance(server: McpServer): void {
             description: 'Read multiple notes with flexible input options',
             annotations: {
                 readOnlyHint: true,
+                openWorldHint: false,
             },
+            outputSchema: outputSchemas.multiple,
             inputSchema: {
                 filenames: z
-                    .array(z.string())
+                    .array(z.string().min(1)).min(1).max(100)
                     .optional()
                     .describe('Array of specific note filenames to read (e.g., ["note1.md", "note2.md"])'),
                 namePattern: z
@@ -81,20 +80,21 @@ export function configureMcpServerInstance(server: McpServer): void {
                     .default(true)
                     .describe('Whether to include file metadata (size, permissions, etc.)'),
                 maxResults: z
-                    .number()
+                    .number().int().min(1).max(100)
                     .default(50)
                     .describe('Maximum number of notes to return (prevents overload)'),
                 enableCaching: z
                     .boolean()
                     .default(true)
                     .describe('Whether to use content caching for better performance'),
+                contentLimit: z.number().int().min(1).max(100_000).default(50_000).describe('Maximum characters per returned note'),
                 format: z
                     .enum(['structured', 'concatenated', 'summary'])
                     .default('structured')
                     .describe('Output format: structured (detailed), concatenated (combined content), or summary (previews only)'),
             },
         },
-        async ({ filenames, namePattern, includeContent, includeMetadata, maxResults, enableCaching, format }) => {
+        async ({ filenames, namePattern, includeContent, includeMetadata, maxResults, enableCaching, format, contentLimit }) => {
             try {
                 // Validate input
                 if (!filenames && !namePattern) {
@@ -118,6 +118,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                     maxResults,
                     enableCaching,
                     format,
+                    contentLimit,
                 };
 
                 // Get available notes for validation and metadata
@@ -145,6 +146,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                     }
 
                     return {
+                        structuredContent: { summary: { totalNotes: 0, successCount: 0, errorCount: 0, permissions: { rw: 0, ro: 0 } }, notes: [] },
                         content: [
                             {
                                 type: 'text',
@@ -165,6 +167,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                 const formattedOutput = ContentManager.formatResponse(response, format);
 
                 return {
+                    structuredContent: { ...response },
                     content: [
                         {
                             type: 'text',
@@ -195,13 +198,17 @@ export function configureMcpServerInstance(server: McpServer): void {
         'search-replace-note',
         {
             title: 'Search and Replace In Note',
-            description: 'Search for text in a note and replace it.',
+            description: 'Legacy search/replace with case-insensitive, replace-all defaults. Invalid regex is an error. Prefer edit-note for exact matching, previews, and revision-checked writes.',
             annotations: {
+                readOnlyHint: false,
                 destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false,
             },
+            outputSchema: outputSchemas.replace,
             inputSchema: {
-                filename: z.string().describe('The filename of the note to modify'),
-                searchPattern: z.string().describe('The text or regex pattern to search for'),
+                filename: z.string().min(1).describe('The filename of the note to modify'),
+                searchPattern: z.string().min(1).describe('The text or regex pattern to search for'),
                 replaceText: z.string().describe('The text to replace matches with'),
                 useRegex: z.boolean().default(false).describe('Whether to treat searchPattern as a regex'),
                 caseSensitive: z.boolean().default(false).describe('Whether search should be case-sensitive'),
@@ -213,33 +220,17 @@ export function configureMcpServerInstance(server: McpServer): void {
                 // Read the current content
                 const content = await readNoteAPI(filename);
                 
-                let searchRegex: RegExp;
-                let regexInvalidFallback = false;
-
-                if (useRegex) {
-                    try {
-                        const flags = caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i');
-                        searchRegex = new RegExp(searchPattern, flags);
-                    } catch (error) {
-                        // If regex is invalid, escape special characters and treat as literal
-                        const escapedPattern = searchPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        const flags = caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i');
-                        searchRegex = new RegExp(escapedPattern, flags);
-                        regexInvalidFallback = true;
-                    }
-                } else {
-                    // Escape the search pattern for literal matching
-                    const escapedPattern = searchPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    const flags = caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i');
-                    searchRegex = new RegExp(escapedPattern, flags);
-                }
+                const flags = (replaceAll ? 'g' : '') + (caseSensitive ? '' : 'i');
+                const pattern = useRegex ? searchPattern : searchPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const searchRegex = new RegExp(pattern, flags);
 
                 // Count matches before replacement
                 const matches = content.match(searchRegex);
-                const matchCount = matches ? matches.length : 0;
+                const matchCount = matches ? (replaceAll ? matches.length : 1) : 0;
 
                 if (matchCount === 0) {
                     return {
+                        structuredContent: { filename, replacements: 0, changed: false },
                         content: [
                             {
                                 type: 'text',
@@ -250,18 +241,15 @@ export function configureMcpServerInstance(server: McpServer): void {
                 }
 
                 // Perform replacement
-                const newContent = content.replace(searchRegex, replaceText);
+                const newContent = content.replace(searchRegex, () => replaceText);
                 
                 // Write back the modified content
-                await writeNoteAPI(filename, newContent);
+                if (newContent !== content) await writeNoteAPI(filename, newContent);
 
                 let resultMessage = `Successfully replaced ${matchCount} occurrence${matchCount === 1 ? '' : 's'} of "${searchPattern}" in ${filename}`;
                 
-                if (regexInvalidFallback) {
-                    resultMessage += '\nNote: Invalid regex pattern was treated as literal text.';
-                }
-
                 return {
+                    structuredContent: { filename, replacements: matchCount, changed: newContent !== content },
                     content: [
                         {
                             type: 'text',
@@ -291,11 +279,15 @@ export function configureMcpServerInstance(server: McpServer): void {
         'list-notes',
         {
             title: 'List Notes',
-            description: 'List all notes with optional filtering',
+            description: 'List notes with optional filtering and cursor pagination (100 per page by default)',
             annotations: {
                 readOnlyHint: true,
+                openWorldHint: false,
             },
+            outputSchema: outputSchemas.list,
             inputSchema: {
+                limit: z.number().int().min(1).max(500).default(100),
+                cursor: z.string().optional().describe('nextCursor from the previous page; keep filters unchanged'),
                 namePattern: z
                     .string()
                     .optional()
@@ -306,7 +298,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                     .describe('Filter by permission: "rw" for read-write, "ro" for read-only'),
             },
         },
-        async ({ namePattern, permission }) => {
+        async ({ namePattern, permission, limit, cursor }) => {
             try {
                 let notes = await listNotesAPI();
                 // Apply name pattern filter
@@ -320,6 +312,16 @@ export function configureMcpServerInstance(server: McpServer): void {
                     notes = notes.filter((note) => note.perm === permission);
                 }
                 
+                notes.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+                const total = notes.length;
+                let after = '';
+                if (cursor !== undefined) {
+                    after = Buffer.from(cursor, 'base64url').toString('utf8');
+                    if (!after || Buffer.from(after).toString('base64url') !== cursor) throw new Error('Invalid note cursor');
+                }
+                const remaining = notes.filter(note => note.name > after);
+                notes = remaining.slice(0, limit);
+                const nextCursor = remaining.length > notes.length ? Buffer.from(notes[notes.length - 1].name).toString('base64url') : null;
                 const notesList = notes
                     .map((note) => `- ${note.name} (${note.perm === 'rw' ? 'read-write' : 'read-only'})`)
                     .join('\n');
@@ -334,12 +336,13 @@ export function configureMcpServerInstance(server: McpServer): void {
                         : 'Available notes:';
 
                 return {
+                    structuredContent: { notes, total, nextCursor },
                     content: [
                         {
                             type: 'text',
                             text: `${headerText}\n${
                                 notesList || 'No notes found matching the specified criteria.'
-                            }`,
+                            }${nextCursor ? `\nNext cursor: ${nextCursor}` : ''}`,
                         },
                     ],
                 };
@@ -368,18 +371,22 @@ export function configureMcpServerInstance(server: McpServer): void {
             description: 'Full-text search across notes with concise output and paging',
             annotations: {
                 readOnlyHint: true,
+                openWorldHint: false,
             },
+            outputSchema: outputSchemas.search,
             inputSchema: {
-                query: z.string().describe('Search query (supports javascript regex patterns)'),
+                maxMatchesPerNote: z.number().int().min(1).max(100).default(20),
+                useRegex: z.boolean().default(true).describe('Keep true for legacy regex queries; false treats query literally'),
+                query: z.string().min(1).describe('Search query (supports javascript regex patterns)'),
                 searchType: z
                     .enum(['content', 'title', 'both'])
                     .default('both')
                     .describe('Where to search: content, title (filename), or both'),
                 caseSensitive: z.boolean().default(false).describe('Whether search should be case-sensitive'),
-                maxResults: z.number().default(10).describe('Maximum number of results to return per page'),
-                page: z.number().default(1).describe('Page number for pagination (1-based)'),
+                maxResults: z.number().int().min(1).max(100).default(10).describe('Maximum number of results to return per page'),
+                page: z.number().int().min(1).max(1_000_000).default(1).describe('Page number for pagination (1-based)'),
                 contextLines: z
-                    .number()
+                    .number().int().min(0).max(20)
                     .default(1)
                     .describe('Number of lines of context to show around each match (reduced default for conciseness)'),
                 concise: z.boolean().default(true).describe('Return concise output optimized for LLM consumption'),
@@ -391,6 +398,8 @@ export function configureMcpServerInstance(server: McpServer): void {
         },
         async ({
             query,
+            useRegex,
+            maxMatchesPerNote,
             searchType,
             caseSensitive,
             maxResults,
@@ -403,17 +412,8 @@ export function configureMcpServerInstance(server: McpServer): void {
                 const notes = await listNotesAPI();
                 const searchResults = [];
                 const flags = caseSensitive ? 'g' : 'gi';
-                let searchRegex;
-                let regexInvalidFallback = false;
-
-                try {
-                    searchRegex = new RegExp(query, flags);
-                } catch (error) {
-                    // If regex is invalid, escape special characters and treat as literal
-                    const escapedQuery = query.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
-                    searchRegex = new RegExp(escapedQuery, flags);
-                    regexInvalidFallback = true;
-                }
+                const searchRegex = new RegExp(useRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags);
+                const errors: { filename: string; message: string }[] = [];
 
                 for (const note of notes) {
                     const noteResults: SearchResult = {
@@ -472,6 +472,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                             });
                         } catch (error) {
                             console.error(`[MCP Tool: search-notes] Failed to read note ${note.name}:`, error);
+                            errors.push({ filename: note.name, message: error instanceof Error ? error.message : String(error) });
                             // Continue with other notes
                         }
                     }
@@ -495,30 +496,32 @@ export function configureMcpServerInstance(server: McpServer): void {
                 const totalPages = Math.ceil(totalResults / maxResults);
                 const startIndex = (page - 1) * maxResults;
                 const endIndex = Math.min(startIndex + maxResults, totalResults);
-                const paginatedResults = searchResults.slice(startIndex, endIndex);
+                const paginatedResults = searchResults.slice(startIndex, endIndex).map(result => ({
+                    ...result, matchesTruncated: result.matches.length > maxMatchesPerNote,
+                    matches: result.matches.slice(0, maxMatchesPerNote).map(match => ({ ...match,
+                        content: match.content.slice(0, 2000), context: match.context?.slice(0, 4000) })),
+                }));
+                const totalMatches = searchResults.reduce((sum, result) => sum + result.score, 0);
+                const structuredContent = { query, results: paginatedResults, totalResults, totalMatches,
+                    page, totalPages, nextPage: page < totalPages ? page + 1 : null, errors };
 
                 // Format results
                 if (totalResults === 0) {
                     return {
+                        structuredContent,
                         content: [
                             {
                                 type: 'text',
                                 text: `No matches found for "${query}" in ${
                                     searchType === 'both' ? 'titles or content' : searchType
-                                }.`,
+                                }.${errors.length ? ` Warning: ${errors.length} note(s) could not be read; results are incomplete.` : ''}`,
                             },
                         ],
                     };
                 }
 
-                const totalMatches = searchResults.reduce((sum, result) => sum + result.score, 0);
-
                 let output = '';
-                let fallbackMessage = '';
-
-                if (regexInvalidFallback) {
-                    fallbackMessage = `Warning: Your regex query "${query}" was invalid and was treated as a literal search.\n`;
-                }
+                const fallbackMessage = errors.length ? `Warning: ${errors.length} note(s) could not be read; results are incomplete.\n` : '';
 
                 // Header with pagination info
                 if (concise) {
@@ -530,7 +533,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                 // Results
                 paginatedResults.forEach((result, index) => {
                     const resultNum = startIndex + index + 1;
-                    const totalNoteMatches = result.matches.reduce((sum, match) => sum + match.matchCount, 0);
+                    const totalNoteMatches = result.score;
 
                     if (concise) {
                         output += `${resultNum}. ${result.filename} (${totalNoteMatches}x)\n`;
@@ -577,6 +580,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                             }
                         });
                     }
+                    if (result.matchesTruncated) output += '  [Additional matching lines omitted]\n';
                     output += '\n';
                 });
 
@@ -594,6 +598,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                 }
 
                 return {
+                    structuredContent,
                     content: [
                         {
                             type: 'text',
@@ -623,26 +628,27 @@ export function configureMcpServerInstance(server: McpServer): void {
         'read-note',
         {
             title: 'Read Note',
-            description: 'Read a single note',
+            description: 'Read note content with a revision token. Returns up to 50,000 characters by default; use nextOffset to continue.',
             annotations: {
                 readOnlyHint: true,
+                openWorldHint: false,
             },
+            outputSchema: outputSchemas.read,
             inputSchema: {
-                filename: z.string().describe('The filename of the note to read'),
+                offset: z.number().int().min(0).default(0).describe('Character offset (UTF-16 code units)'),
+                limit: z.number().int().min(1).max(100_000).default(50_000).describe('Maximum characters to return'),
+                filename: z.string().min(1).describe('The filename of the note to read'),
                 suggestSimilar: z.boolean().default(true).describe('Whether to suggest similar note names if the note is not found'),
             },
         },
-        async ({ filename, suggestSimilar }) => {
+        async ({ filename, suggestSimilar, offset, limit }) => {
             try {
-                const content = await readNoteAPI(filename);
-                return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: content,
-                        },
-                    ],
-                };
+                const note = await readNoteSnapshotAPI(filename);
+                const content = note.content.slice(offset, offset + limit);
+                const nextOffset = offset + content.length < note.content.length ? offset + content.length : null;
+                return toolResult({ filename, content, revision: note.revision, offset,
+                    totalCharacters: note.content.length, nextOffset },
+                    content + (nextOffset !== null ? `\n[Truncated; continue with offset=${nextOffset}]` : ''));
             } catch (error) {
                 console.error(`[MCP Tool: read-note] Error reading note ${filename}:`, error);
                 
@@ -691,10 +697,14 @@ export function configureMcpServerInstance(server: McpServer): void {
             title: 'Create Note',
             description: 'Create a new note',
             annotations: {
+                readOnlyHint: false,
                 destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false,
             },
+            outputSchema: outputSchemas.create,
             inputSchema: {
-                filename: z.string().describe('The filename for the new note (should end with .md)'),
+                filename: z.string().min(1).describe('The filename for the new note (should end with .md)'),
                 content: z.string().describe('The content for the new note'),
                 overwrite: z.boolean().default(false).describe('Whether to overwrite existing note if it exists'),
             },
@@ -728,14 +738,15 @@ export function configureMcpServerInstance(server: McpServer): void {
                             isError: true,
                         };
                     } catch (error) {
-                        // Note doesn't exist, which is what we want for creating
+                        if (!(error instanceof SilverBulletAPIError) || error.status !== 404) throw error;
                     }
                 }
 
-                await writeNoteAPI(filename, content);
+                const revision = await writeNoteAPI(filename, content, { createOnly: !overwrite });
                 
                 const action = overwrite ? 'created/updated' : 'created';
                 return {
+                    structuredContent: { filename, overwrite, revision },
                     content: [
                         {
                             type: 'text',
@@ -767,10 +778,14 @@ export function configureMcpServerInstance(server: McpServer): void {
             title: 'Delete Note',
             description: 'Delete a note',
             annotations: {
+                readOnlyHint: false,
                 destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false,
             },
+            outputSchema: outputSchemas.delete,
             inputSchema: {
-                filename: z.string().describe('The filename of the note to delete (should end with .md)'),
+                filename: z.string().min(1).describe('The filename of the note to delete (should end with .md)'),
             },
         },
         async ({ filename }) => {
@@ -788,6 +803,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                 }
                 await deleteNoteAPI(filename);
                 return {
+                    structuredContent: { filename, deleted: true },
                     content: [
                         {
                             type: 'text',
@@ -811,4 +827,22 @@ export function configureMcpServerInstance(server: McpServer): void {
             }
         }
     );
+    server.server.setRequestHandler(ListResourcesRequestSchema, async request => {
+        const cursor = request.params?.cursor;
+        let after = '';
+        if (cursor !== undefined) {
+            after = Buffer.from(cursor, 'base64url').toString('utf8');
+            if (!after || Buffer.from(after).toString('base64url') !== cursor) {
+                throw new McpError(ErrorCode.InvalidParams, 'Invalid resource cursor');
+            }
+        }
+        const notes = (await listNotesAPI()).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+        const remaining = notes.filter(note => note.name > after);
+        const page = remaining.slice(0, 100);
+        return {
+            resources: page.map(note => ({ uri: `sb-note://${encodeURIComponent(note.name)}`, name: note.name })),
+            ...(remaining.length > page.length ? { nextCursor: Buffer.from(page[page.length - 1].name).toString('base64url') } : {}),
+        };
+    });
+
 }
