@@ -95,6 +95,10 @@ the listing cache). Content caching retains at most 256 notes.
 `search-replace-note` always treats replacement text literally, including `$1`,
 `$&`, and `$$`, even when `useRegex` enables regex matching of the search pattern.
 
+The tools that write (`create-note`, `edit-note`, `search-replace-note` and
+`delete-note`) accept only filenames ending in `.md`, so they cannot change plug
+code or other non-note files in the space.
+
 ## Editing notes and structured tool results
 
 Use `edit-note` for precise edits. Example tool arguments:

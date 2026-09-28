@@ -168,3 +168,14 @@ test('exact editing preserves BOM, Unicode, line endings, and the missing final 
   await h.call('edit-note', { filename: 'Test.md', edits: [{ oldText: 'α😀', newText: 'β😀' }] });
   assert.equal(h.notes.get('Test.md'), '\uFEFFTitle\r\n  β😀');
 });
+
+test('search-replace-note and edit-note only write .md notes, like create-note and delete-note', async t => {
+  const h = await setup(t);
+  for (const filename of ['_plug/x.plug.js', 'Library/std.lua', 'Test.MD.bak']) {
+    h.notes.set(filename, 'original');
+    await h.call('search-replace-note', { filename, searchPattern: 'original', replaceText: 'changed' }, true);
+    await h.call('edit-note', { filename, edits: [{ oldText: 'original', newText: 'changed' }] }, true);
+    assert.equal(h.notes.get(filename), 'original', filename);
+  }
+  assert.equal(h.requests.filter(r => r.method === 'PUT').length, 0);
+});

@@ -217,6 +217,18 @@ export function configureMcpServerInstance(server: McpServer): void {
         },
         async ({ filename, searchPattern, replaceText, useRegex, caseSensitive, replaceAll }) => {
             try {
+                if (!filename.endsWith('.md')) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: 'Filename must end with .md extension',
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+
                 // Read the current content
                 const content = await readNoteAPI(filename);
                 

@@ -57,6 +57,7 @@ export function registerEditNote(server: McpServer): void {
         },
     }, async ({ filename, edits, expectedRevision, dryRun }) => {
         try {
+            if (!filename.endsWith('.md')) throw new Error('Filename must end with .md extension');
             const original = await readNoteSnapshotAPI(filename);
             if (expectedRevision !== undefined && expectedRevision !== original.revision) {
                 throw new Error('Revision conflict: the note has changed. Read it again before editing. Nothing was written.');
