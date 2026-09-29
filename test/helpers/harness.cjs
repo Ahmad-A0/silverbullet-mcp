@@ -21,6 +21,31 @@ async function startHarness(t, prefix = '', external = {}) {
       res.end(JSON.stringify([...notes].map(([name, content]) => ({ name, perm: 'rw', lastModified: modified, size: content.length, contentType: 'text/markdown' }))));
       return;
     }
+    if (req.url === `${prefix}/.runtime/lua_script` && req.method === 'POST') {
+      // Optional Runtime API mock, enabled via external.runtime.
+      const rt = external.runtime;
+      let body = ''; for await (const chunk of req) body += chunk;
+      const send = obj => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      if (!rt || rt.disabled) { res.writeHead(404).end(); return; }
+      if (rt.failProbe) { send({ error: rt.failProbe }); return; }
+      if (body.includes('caps.basicSearch')) {
+        send({ result: { basicSearch: !!rt.basicSearch, silversearch: !!rt.silversearch, query: true } });
+        return;
+      }
+      const m = body.match(/search\.ftsSearch\('(.*)'\)/) || body.match(/silversearch\.search\('(.*)'/);
+      if (m) {
+        if (rt.failSearch) { send({ error: rt.failSearch }); return; }
+        const term = m[1].replace(/\\(.)/g, '$1').toLowerCase();
+        const engine = body.includes('ftsSearch') ? 'basic' : 'silver';
+        const hits = [...notes.entries()]
+          .filter(([, c]) => c.toLowerCase().includes(term))
+          .map(([n], i) => engine === 'basic' ? { id: n.replace(/\.md$/, ''), score: 10 - i } : { name: n.replace(/\.md$/, ''), score: 10 - i });
+        send({ result: rt.results ? rt.results(hits) : hits });
+        return;
+      }
+      send({ result: null });
+      return;
+    }
     if (!req.url.startsWith(`${prefix}/.fs/`)) { res.writeHead(404).end(); return; }
     const name = decodeURIComponent(req.url.slice(`${prefix}/.fs/`.length));
     if (req.method === 'PUT') {

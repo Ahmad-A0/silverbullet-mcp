@@ -16,6 +16,18 @@ import { URL } from 'node:url';
 import { registerEditNote } from './edit-note.js';
 import { outputSchemas } from './tool-schemas.js';
 import { toolResult } from './tool-results.js';
+import { hybridSearch, type SearchContext } from './search-strategy.js';
+import { createRuntimeClient } from './runtime-client.js';
+import { loadCaps, saveCaps, clearCaps } from './caps-store.js';
+import { SB_API_BASE_URL, SB_AUTH_TOKEN } from './config.js';
+
+let runtimeClientSingleton: ReturnType<typeof createRuntimeClient> | null = null;
+function getRuntimeClient() {
+    if (!runtimeClientSingleton) {
+        runtimeClientSingleton = createRuntimeClient(SB_API_BASE_URL, SB_AUTH_TOKEN);
+    }
+    return runtimeClientSingleton;
+}
 
 export function configureMcpServerInstance(server: McpServer): void {
     registerEditNote(server);
@@ -394,6 +406,10 @@ export function configureMcpServerInstance(server: McpServer): void {
                     .boolean()
                     .default(true)
                     .describe('Enable content caching with modification time validation'),
+                searchMode: z
+                    .enum(['auto', 'scan', 'index'])
+                    .default('auto')
+                    .describe('auto: full-text index when available, full scan otherwise; scan: always scan; index: require the index (errors if unavailable)'),
             },
         },
         async ({
@@ -407,103 +423,63 @@ export function configureMcpServerInstance(server: McpServer): void {
             contextLines,
             concise,
             enableCaching,
+            searchMode,
         }) => {
             try {
-                const notes = await listNotesAPI();
-                const searchResults = [];
-                const flags = caseSensitive ? 'g' : 'gi';
-                const searchRegex = new RegExp(useRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags);
+                // Upstream contract: an invalid regex with useRegex=true is an
+                // explicit tool error (thrown here, before any search runs).
+                if (useRegex) new RegExp(query, caseSensitive ? 'g' : 'gi');
                 const errors: { filename: string; message: string }[] = [];
 
-                for (const note of notes) {
-                    const noteResults: SearchResult = {
-                        filename: note.name,
-                        permission: note.perm,
-                        matches: [],
-                        score: 0,
-                    };
-
-                    // Search in title/filename
-                    if (searchType === 'title' || searchType === 'both') {
-                        const titleMatches = Array.from(note.name.matchAll(searchRegex));
-                        if (titleMatches.length > 0) {
-                            noteResults.matches.push({
-                                type: 'title',
-                                line: 0,
-                                content: note.name,
-                                matchCount: titleMatches.length,
-                            });
-                        }
-                    }
-
-                    // Search in content
-                    if (searchType === 'content' || searchType === 'both') {
+                // Hybrid search: full-text index (Runtime API + silversearch /
+                // basic-search) when available, full scan otherwise. Zero index
+                // results are validated against the notes so a stale index can
+                // never hide matches. Read failures are reported via `errors`.
+                const ctx: SearchContext = {
+                    listNotes: listNotesAPI,
+                    readNote: async (filename: string) => {
                         try {
-                            const content = await getCachedNoteContent(note.name, enableCaching);
-                            const lines = content.split('\n');
-
-                            lines.forEach((line, lineIndex) => {
-                                const lineMatches = Array.from(line.matchAll(searchRegex));
-                                if (lineMatches.length > 0) {
-                                    // Get context lines only if not in concise mode or if contextLines > 0
-                                    let contextText = '';
-                                    if (!concise && contextLines > 0) {
-                                        const startLine = Math.max(0, lineIndex - contextLines);
-                                        const endLine = Math.min(lines.length - 1, lineIndex + contextLines);
-                                        contextText = lines.slice(startLine, endLine + 1).join('\n');
-                                    }
-
-                                    noteResults.matches.push({
-                                        type: 'content',
-                                        line: lineIndex + 1,
-                                        content: line.trim(), // Trim whitespace for conciseness
-                                        context: contextText,
-                                        matchCount: lineMatches.length,
-                                        startLine:
-                                            contextLines > 0
-                                                ? Math.max(0, lineIndex - contextLines) + 1
-                                                : undefined,
-                                        endLine:
-                                            contextLines > 0
-                                                ? Math.min(lines.length - 1, lineIndex + contextLines) + 1
-                                                : undefined,
-                                    });
-                                }
-                            });
+                            return await getCachedNoteContent(filename, enableCaching);
                         } catch (error) {
-                            console.error(`[MCP Tool: search-notes] Failed to read note ${note.name}:`, error);
-                            errors.push({ filename: note.name, message: error instanceof Error ? error.message : String(error) });
-                            // Continue with other notes
+                            errors.push({ filename, message: error instanceof Error ? error.message : String(error) });
+                            throw error;
                         }
-                    }
+                    },
+                    runtime: getRuntimeClient(),
+                    caps: {
+                        get: () => loadCaps(SB_API_BASE_URL),
+                        save: (c: { available: boolean; engine?: string }) => saveCaps(SB_API_BASE_URL, c),
+                        clear: () => clearCaps(SB_API_BASE_URL),
+                    },
+                };
+                const outcome = await hybridSearch({
+                    ctx,
+                    query,
+                    searchType,
+                    caseSensitive,
+                    useRegex,
+                    maxResults,
+                    page,
+                    mode: searchMode,
+                    concise,
+                    contextLines,
+                });
 
-                    if (noteResults.matches.length > 0) {
-                        // Calculate total score for ranking
-                        const totalMatches = noteResults.matches.reduce(
-                            (sum, match) => sum + match.matchCount,
-                            0
-                        );
-                        noteResults.score = totalMatches;
-                        searchResults.push(noteResults);
-                    }
-                }
+                const totalResults = outcome.totalResults;
+                const totalPages = outcome.totalPages;
+                const startIndex = outcome.startIndex;
+                const searchSourceLabel = outcome.source === 'index' ? 'via full-text index' : 'via full scan';
+                const sourceNotice = outcome.notice ? `Note: ${outcome.notice}\n` : '';
 
-                // Sort by relevance (score)
-                searchResults.sort((a, b) => b.score - a.score);
-
-                // Calculate pagination
-                const totalResults = searchResults.length;
-                const totalPages = Math.ceil(totalResults / maxResults);
-                const startIndex = (page - 1) * maxResults;
-                const endIndex = Math.min(startIndex + maxResults, totalResults);
-                const paginatedResults = searchResults.slice(startIndex, endIndex).map(result => ({
+                const paginatedResults = outcome.results.map(result => ({
                     ...result, matchesTruncated: result.matches.length > maxMatchesPerNote,
                     matches: result.matches.slice(0, maxMatchesPerNote).map(match => ({ ...match,
                         content: match.content.slice(0, 2000), context: match.context?.slice(0, 4000) })),
                 }));
-                const totalMatches = searchResults.reduce((sum, result) => sum + result.score, 0);
+                const totalMatches = outcome.totalMatches;
                 const structuredContent = { query, results: paginatedResults, totalResults, totalMatches,
-                    page, totalPages, nextPage: page < totalPages ? page + 1 : null, errors };
+                    page, totalPages, nextPage: page < totalPages ? page + 1 : null, errors,
+                    searchSource: outcome.source, notice: outcome.notice };
 
                 // Format results
                 if (totalResults === 0) {
@@ -514,7 +490,7 @@ export function configureMcpServerInstance(server: McpServer): void {
                                 type: 'text',
                                 text: `No matches found for "${query}" in ${
                                     searchType === 'both' ? 'titles or content' : searchType
-                                }.${errors.length ? ` Warning: ${errors.length} note(s) could not be read; results are incomplete.` : ''}`,
+                                } (searched ${searchSourceLabel}).${errors.length ? ` Warning: ${errors.length} note(s) could not be read; results are incomplete.` : ''}${outcome.notice ? ` Note: ${outcome.notice}` : ''}`,
                             },
                         ],
                     };
@@ -525,9 +501,9 @@ export function configureMcpServerInstance(server: McpServer): void {
 
                 // Header with pagination info
                 if (concise) {
-                    output = `${fallbackMessage}SEARCH: "${query}" | Results: ${totalResults} notes, ${totalMatches} matches | Page ${page}/${totalPages}\n\n`;
+                    output = `${fallbackMessage}${sourceNotice}SEARCH: "${query}" | Results: ${totalResults} notes, ${totalMatches} matches | Page ${page}/${totalPages} | ${searchSourceLabel}\n\n`;
                 } else {
-                    output = `${fallbackMessage}Found ${totalMatches} matches in ${totalResults} notes (showing page ${page} of ${totalPages}):\n\n`;
+                    output = `${fallbackMessage}${sourceNotice}Found ${totalMatches} matches in ${totalResults} notes (showing page ${page} of ${totalPages}) | ${searchSourceLabel}:\n\n`;
                 }
 
                 // Results
