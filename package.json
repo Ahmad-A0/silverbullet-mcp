@@ -1,9 +1,17 @@
 {
   "name": "silverbullet-mcp-server",
   "version": "1.2.0",
+  "bin": {
+    "silverbullet-mcp": "dist/stdio.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:stdio": "node dist/stdio.js",
+    "prepublishOnly": "npm run build",
     "test": "npm run build && node --test test/*.test.cjs test/regressions/*.test.cjs",
     "test:regressions": "npm run build && node --test test/regressions/*.test.cjs",
     "test:live": "npm run build && node --test test/live/*.test.cjs"

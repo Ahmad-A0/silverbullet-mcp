@@ -161,7 +161,7 @@ This MCP server runs as part of a Docker Compose setup and will be accessible at
 
 You can connect to this server using an MCP client. The method of connection and authentication depends on the client's capabilities.
 
-### Using `mcp-remote` (for stdio-only clients)
+### Using `mcp-remote` (Docker + stdio-only clients)
 
 If your MCP client only supports `stdio` connections (e.g., older versions of Claude Desktop, Cursor, Windsurf), you can use `mcp-remote` to bridge the connection to this HTTP-based MCP server.
 
@@ -218,6 +218,36 @@ Replace `YOUR_MCP_TOKEN` with the actual value of the `MCP_TOKEN` environment va
 
 Consult your MCP client's documentation on how to configure connections to remote HTTP MCP servers, including how to send custom headers or append query parameters.
 
+
+### Direct stdio (pure stdio, no docker)
+
+If your MCP client can launch a local process over stdio, you can run the server
+directly without Docker or the HTTP listener. No `MCP_TOKEN` is needed — the
+spawning client is the only caller — but `SB_AUTH_TOKEN` (and the optional
+`SB_API_BASE_URL`) must be set so the server can reach SilverBullet.
+
+As the package is not yet published to any package registery, you have to clone this repository and run the following commands:
+
+```bash
+npm install && npm run build
+```
+
+```jsonc
+{
+  "mcpServers": {
+    "silverbullet": {
+      "command": "node",
+      "args": ["/absolute/path/to/silverbullet-mcp/dist/stdio.js"],
+      "env": {
+        "SB_API_BASE_URL": "http://your-silverbullet-host:3000",
+        "SB_AUTH_TOKEN": "your-dashboard-issued-api-token"
+      }
+    }
+  }
+}
+```
+
+This will provide you direct access to your SilverBullet instance without any docker container requirement.
 
 
 ## Development and testing

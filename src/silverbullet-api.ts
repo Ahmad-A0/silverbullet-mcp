@@ -80,7 +80,7 @@ export async function readNoteAPI(filename: string): Promise<string> {
 }
 
 export async function readNoteSnapshotAPI(filename: string): Promise<{ content: string; revision: string | null }> {
-    console.log(`[readNoteAPI] Reading note ${filename}`);
+    console.error(`[readNoteAPI] Reading note ${filename}`);
     const url = `${SB_API_BASE_URL}/.fs/${encodeURIComponent(filename)}`;
     const fetchHeaders = createFetchHeaders();
 

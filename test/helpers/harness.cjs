@@ -6,7 +6,8 @@ const { createHash } = require('node:crypto');
 const revision = text => `"sha256:${createHash('sha256').update(text).digest('hex')}"`;
 const target = path.resolve(process.env.TEST_TARGET_DIR || path.join(__dirname, '../..'));
 
-async function startHarness(t, prefix = '', external = {}) {
+// In-memory SilverBullet HTTP fixture shared by the HTTP and stdio harnesses.
+async function startFixtureBackend(t, prefix = '') {
   const notes = new Map([['Test.md', 'hello world'], ['Folder/Space note.md', 'nested content']]);
   let modified = 1;
   const requests = [];
@@ -41,10 +42,20 @@ async function startHarness(t, prefix = '', external = {}) {
   });
   await new Promise(resolve => backend.listen(0, '127.0.0.1', resolve));
   t.after(() => { backend.closeAllConnections(); backend.close(); });
+  return { notes, requests, controls, backend, url: `http://127.0.0.1:${backend.address().port}${prefix}` };
+}
+
+async function reservePort() {
   const reservation = createServer();
   await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
+  return port;
+}
+
+async function startHarness(t, prefix = '', external = {}) {
+  const { notes, requests, controls, backend } = await startFixtureBackend(t, prefix);
+  const port = await reservePort();
   const child = spawn(process.execPath, [path.join(target, 'dist/server.js')], {
     cwd: target,
     env: { PATH: process.env.PATH, PORT: String(port), MCP_TOKEN: 'fixture-mcp-token', SB_AUTH_TOKEN: external.token || 'fixture-sb-token', SB_API_BASE_URL: external.url || `http://127.0.0.1:${backend.address().port}${prefix}` },
@@ -84,4 +95,56 @@ async function startHarness(t, prefix = '', external = {}) {
   }
   return { notes, requests, rpc, initialize, base, child, controls };
 }
-module.exports = { startHarness, target };
+
+// stdio harness: spawns dist/stdio.js and speaks newline-delimited JSON-RPC.
+async function startStdioHarness(t, prefix = '', external = {}) {
+  const { notes, requests, controls, url } = await startFixtureBackend(t, prefix);
+  const child = spawn(process.execPath, [path.join(target, 'dist/stdio.js')], {
+    cwd: target,
+    env: { PATH: process.env.PATH, SB_AUTH_TOKEN: external.token || 'fixture-sb-token', SB_API_BASE_URL: external.url || url },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let logs = '';
+  let buffer = '';
+  const stdoutNoise = [];
+  const pending = new Map();
+  child.stdout.on('data', chunk => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      let message;
+      try { message = JSON.parse(line); } catch { stdoutNoise.push(line); logs = (logs + `non-JSON stdout: ${line}\n`).slice(-16000); continue; }
+      const resolve = pending.get(message.id);
+      if (resolve) { pending.delete(message.id); resolve(message); }
+    }
+  });
+  child.stderr.on('data', chunk => { logs = (logs + chunk).slice(-16000); });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
+    }
+  });
+  let id = 0;
+  function rpc(method, params = {}, timeout = 5000) {
+    const requestId = ++id;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { pending.delete(requestId); reject(new Error(`stdio rpc timeout: ${logs}`)); }, timeout);
+      pending.set(requestId, message => { clearTimeout(timer); resolve(message); });
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params }) + '\n');
+    });
+  }
+  function notify(method, params = {}) {
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+  }
+  async function initialize() {
+    const result = await rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'repo-test', version: '1' } });
+    if (!result.result) throw new Error(JSON.stringify(result));
+    notify('notifications/initialized');
+    return result;
+  }
+  return { notes, requests, rpc, notify, initialize, child, controls, get logs() { return logs; }, get stdoutNoise() { return stdoutNoise; } };
+}
+
+module.exports = { startHarness, startStdioHarness, target };
