@@ -14,11 +14,13 @@ import {
 } from './note-utils.js';
 import { URL } from 'node:url';
 import { registerEditNote } from './edit-note.js';
+import { registerFileTools } from './file-tools.js';
 import { outputSchemas } from './tool-schemas.js';
 import { toolResult } from './tool-results.js';
 
 export function configureMcpServerInstance(server: McpServer): void {
     registerEditNote(server);
+    registerFileTools(server);
     // Resource: read a single note or list all notes
     server.registerResource(
         'note',

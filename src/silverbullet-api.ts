@@ -55,11 +55,10 @@ async function fetchFileListing(): Promise<SBFile[]> {
         const response = await fetch(url, { headers: createFetchHeaders() });
         if (!response.ok) await handleResponseError(url, response, 'to list files');
         const files: SBFile[] = await response.json();
-        const filtered = files.filter(f => f.name.endsWith('.md') && !f.name.startsWith('Library'));
         if (startedGeneration === generation) {
-            listingCache = { files: filtered, expires: Date.now() + LISTING_TTL_MS };
+            listingCache = { files, expires: Date.now() + LISTING_TTL_MS };
         }
-        return filtered;
+        return files;
     })();
     listingFlight = flight;
     try { return await flight; }
@@ -67,7 +66,9 @@ async function fetchFileListing(): Promise<SBFile[]> {
 }
 
 export async function listNotesAPI(): Promise<NoteInfo[]> {
-    return (await fetchFileListing()).map(({ name, perm }) => ({ name, perm }));
+    return (await fetchFileListing())
+        .filter(f => f.name.endsWith('.md') && !f.name.startsWith('Library'))
+        .map(({ name, perm }) => ({ name, perm }));
 }
 
 export async function getFullFileListingAPI(): Promise<SBFile[]> {
@@ -111,11 +112,11 @@ export async function readNoteSnapshotAPI(filename: string): Promise<{ content: 
 }
 
 export async function writeNoteAPI(filename: string, content: string,
-    options: { expectedRevision?: string; createOnly?: boolean } = {}
+    options: { expectedRevision?: string; createOnly?: boolean; contentType?: string } = {}
 ): Promise<string | null> {
     const url = `${SB_API_BASE_URL}/.fs/${encodeURIComponent(filename)}`;
     const fetchHeaders: HeadersInit = {
-        'Content-Type': 'text/markdown',
+        'Content-Type': options.contentType ?? 'text/markdown',
         'X-Sync-Mode': 'true',
     };
     if (SB_AUTH_TOKEN) {

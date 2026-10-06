@@ -14,6 +14,10 @@ test('HTTP MCP baseline against disposable SilverBullet fixture', async t => {
     const result = await h.rpc('tools/list', {}, first);
     assert.equal(result.status, 200);
     assert.ok(result.json.result.tools.some(tool => tool.name === 'search-replace-note'));
+    assert.ok(result.json.result.tools.some(tool => tool.name === 'list-files'));
+    assert.ok(result.json.result.tools.some(tool => tool.name === 'read-file'));
+    assert.ok(result.json.result.tools.some(tool => tool.name === 'write-file'));
+    assert.ok(result.json.result.tools.some(tool => tool.name === 'delete-file'));
   });
   await t.test('reads a nested filename through the API', async () => {
     const result = await h.rpc('tools/call', { name: 'read-note', arguments: { filename: 'Folder/Space note.md' } }, first);

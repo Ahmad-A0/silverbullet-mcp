@@ -95,6 +95,22 @@ the listing cache). Content caching retains at most 256 notes.
 `search-replace-note` always treats replacement text literally, including `$1`,
 `$&`, and `$$`, even when `useRegex` enables regex matching of the search pattern.
 
+## Arbitrary text files
+
+In addition to Markdown note tools, the server exposes generic UTF-8 text file tools:
+
+- `list-files` lists files across the SilverBullet space and can filter by extension, name, and permission.
+- `read-file` reads arbitrary UTF-8 text files with pagination and a revision token.
+- `write-file` creates or replaces arbitrary UTF-8 text files and supports revision-checked updates.
+- `delete-file` deletes a file by exact filename.
+
+These tools are useful for text-based auxiliary formats stored alongside notes, such as
+Excalidraw's JSON-based `.excalidraw` files. Binary files can be listed, but `read-file`
+and `write-file` intentionally reject unsupported binary content.
+
+The existing note tools retain their Markdown-only behavior, so adding generic file support
+does not change `list-notes`, note resource discovery, or other note-specific workflows.
+
 ## Editing notes and structured tool results
 
 Use `edit-note` for precise edits. Example tool arguments:
@@ -130,7 +146,7 @@ replace-all defaults. It does not provide revision protection; use `edit-note`
 for that. Invalid regexes now return errors instead of falling back to literal
 matching. `search-notes` also accepts `useRegex: false` for literal searches.
 
-All eight tools advertise an `outputSchema` and return `structuredContent` on
+All tools advertise an `outputSchema` and return `structuredContent` on
 success alongside the existing readable text. Tool failures return `isError: true`
 and an explanation; successful output schemas do not describe error results.
 Batch reads and searches include per-note errors when only some reads fail.

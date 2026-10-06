@@ -18,7 +18,16 @@ async function startHarness(t, prefix = '', external = {}) {
     }
     if (req.url === `${prefix}/.fs`) {
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify([...notes].map(([name, content]) => ({ name, perm: 'rw', lastModified: modified, size: content.length, contentType: 'text/markdown' }))));
+      res.end(JSON.stringify([...notes].map(([name, content]) => ({
+        name,
+        perm: 'rw',
+        lastModified: modified,
+        size: content.length,
+        contentType: name.endsWith('.excalidraw') || name.endsWith('.json')
+          ? 'application/json'
+          : name.endsWith('.png') ? 'image/png'
+          : 'text/markdown',
+      }))));
       return;
     }
     if (!req.url.startsWith(`${prefix}/.fs/`)) { res.writeHead(404).end(); return; }

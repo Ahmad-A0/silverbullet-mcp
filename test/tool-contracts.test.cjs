@@ -120,6 +120,44 @@ test('read, list, search, batch, create, delete and legacy replacement return va
   await h.call('delete-note', { filename: 'New.md' });
 });
 
+test('arbitrary UTF-8 file tools support Excalidraw without changing note discovery', async t => {
+  const h = await setup(t);
+  h.notes.set('Diagrams/Architecture.excalidraw', '{"type":"excalidraw","elements":[]}');
+  h.notes.set('Assets/image.png', '\\x89PNG');
+
+  const notes = (await h.call('list-notes', {})).structuredContent;
+  assert.ok(!notes.notes.some(note => note.name.endsWith('.excalidraw')));
+  assert.ok(!notes.notes.some(note => note.name.endsWith('.png')));
+
+  const files = (await h.call('list-files', { extension: 'excalidraw' })).structuredContent;
+  assert.equal(files.files.length, 1);
+  assert.equal(files.files[0].name, 'Diagrams/Architecture.excalidraw');
+  assert.equal(files.files[0].contentType, 'application/json');
+
+  const read = (await h.call('read-file', { filename: 'Diagrams/Architecture.excalidraw' })).structuredContent;
+  assert.match(read.content, /"type":"excalidraw"/);
+  assert.equal(read.contentType, 'application/json');
+
+  const updated = '{"type":"excalidraw","elements":[{"type":"rectangle"}]}';
+  await h.call('write-file', {
+    filename: 'Diagrams/Architecture.excalidraw',
+    content: updated,
+    overwrite: true,
+    expectedRevision: read.revision,
+  });
+  assert.equal(h.notes.get('Diagrams/Architecture.excalidraw'), updated);
+
+  await h.call('write-file', {
+    filename: 'Diagrams/New.excalidraw',
+    content: '{"type":"excalidraw","elements":[]}',
+  });
+  assert.ok(h.notes.has('Diagrams/New.excalidraw'));
+
+  await h.call('read-file', { filename: 'Assets/image.png' }, true);
+  await h.call('delete-file', { filename: 'Diagrams/New.excalidraw' });
+  assert.ok(!h.notes.has('Diagrams/New.excalidraw'));
+});
+
 test('invalid patterns and limits are explicit tool errors', async t => {
   const h = await setup(t);
   for (const [name, args] of [

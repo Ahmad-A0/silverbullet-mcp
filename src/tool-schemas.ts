@@ -23,4 +23,14 @@ export const outputSchemas = {
     replace: { filename: z.string(), replacements: z.number().int(), changed: z.boolean() },
     create: { filename: z.string(), overwrite: z.boolean(), revision: z.string().nullable() },
     delete: { filename: z.string(), deleted: z.literal(true) },
+    fileList: { files: z.array(z.object({
+        name: z.string(), perm: z.enum(['ro', 'rw']), contentType: z.string(),
+        size: z.number(), lastModified: z.number(),
+    })), total: z.number().int(), nextCursor: z.string().nullable() },
+    fileRead: { filename: z.string(), content: z.string(), contentType: z.string(),
+        revision: z.string().nullable(), offset: z.number().int(), totalCharacters: z.number().int(),
+        nextOffset: z.number().int().nullable() },
+    fileWrite: { filename: z.string(), overwrite: z.boolean(), contentType: z.string(),
+        revision: z.string().nullable() },
+    fileDelete: { filename: z.string(), deleted: z.literal(true) },
 };
