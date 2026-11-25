@@ -72,6 +72,21 @@ test('bad, ambiguous, overlapping, stale, and unsupported edits never write', as
   assert.equal(h.requests.filter(r => r.method === 'PUT').length, 0);
 });
 
+test('edit-note uses X-SilverBullet-Revision when the ETag is not accepted by If-Match (SilverBullet 3)', async t => {
+  const h = await setup(t);
+  h.controls.sb3 = true;
+  const read = (await h.call('read-note', { filename: 'Test.md' })).structuredContent;
+  assert.match(read.revision, /^"sha256:/);
+  const applied = (await h.call('edit-note', { filename: 'Test.md', expectedRevision: read.revision,
+    edits: [{ oldText: 'hello', newText: 'hi' }] })).structuredContent;
+  assert.equal(applied.applied, true);
+  assert.equal(h.notes.get('Test.md'), 'hi world');
+  assert.equal(h.requests.filter(r => r.method === 'PUT').at(-1).ifMatch, read.revision);
+  await h.call('edit-note', { filename: 'Test.md', expectedRevision: read.revision,
+    edits: [{ oldText: 'hi', newText: 'hey' }] }, true);
+  assert.equal(h.notes.get('Test.md'), 'hi world');
+});
+
 test('write-time revision conflict preserves a concurrent external change', async t => {
   const h = await setup(t);
   h.controls.beforeWrite = (name, notes) => notes.set(name, 'external update');
