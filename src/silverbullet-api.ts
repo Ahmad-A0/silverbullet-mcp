@@ -79,6 +79,12 @@ export async function readNoteAPI(filename: string): Promise<string> {
     return (await readNoteSnapshotAPI(filename)).content;
 }
 
+// SilverBullet 3 returns a content-typed ETag on GET that If-Match rejects; the
+// revision it accepts is in X-SilverBullet-Revision. Older servers only send the ETag.
+function revisionFrom(response: Response): string | null {
+    return response.headers.get('x-silverbullet-revision') ?? response.headers.get('etag');
+}
+
 export async function readNoteSnapshotAPI(filename: string): Promise<{ content: string; revision: string | null }> {
     console.log(`[readNoteAPI] Reading note ${filename}`);
     const url = `${SB_API_BASE_URL}/.fs/${encodeURIComponent(filename)}`;
@@ -99,7 +105,7 @@ export async function readNoteSnapshotAPI(filename: string): Promise<{ content: 
     try {
         // Buffer decoding preserves a UTF-8 BOM, unlike Response.text().
         const content = Buffer.from(await response!.arrayBuffer()).toString('utf8');
-        return { content, revision: response!.headers.get('etag') };
+        return { content, revision: revisionFrom(response!) };
     } catch (error) {
         console.error(`[readNoteAPI] Failed to read text content for ${filename}:`, error);
         throw new Error(
@@ -140,7 +146,7 @@ export async function writeNoteAPI(filename: string, content: string,
         await handleResponseError(url, response!, `to write note ${filename}`);
     }
     invalidateListingCache();
-    return response!.headers.get('etag');
+    return revisionFrom(response!);
 }
 
 export async function deleteNoteAPI(filename: string): Promise<void> {

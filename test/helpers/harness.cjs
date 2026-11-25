@@ -10,7 +10,7 @@ async function startHarness(t, prefix = '', external = {}) {
   const notes = new Map([['Test.md', 'hello world'], ['Folder/Space note.md', 'nested content']]);
   let modified = 1;
   const requests = [];
-  const controls = { etags: true, readStatus: null, beforeWrite: null };
+  const controls = { etags: true, sb3: false, readStatus: null, beforeWrite: null };
   const backend = createServer(async (req, res) => {
     requests.push({ method: req.method, url: req.url, ifMatch: req.headers['if-match'], ifNoneMatch: req.headers['if-none-match'] });
     if (req.headers.authorization !== 'Bearer fixture-sb-token') {
@@ -28,13 +28,18 @@ async function startHarness(t, prefix = '', external = {}) {
       controls.beforeWrite?.(name, notes);
       if ((req.headers['if-match'] && (!notes.has(name) || req.headers['if-match'] !== revision(notes.get(name)))) || (req.headers['if-none-match'] === '*' && notes.has(name))) { res.writeHead(412).end('Precondition Failed'); return; }
       notes.set(name, body); modified++;
-      if (controls.etags) res.setHeader('ETag', revision(body));
+      if (controls.etags || controls.sb3) res.setHeader('ETag', revision(body));
+      if (controls.sb3) res.setHeader('X-SilverBullet-Revision', revision(body));
       res.end();
     } else if (req.method === 'DELETE') {
       notes.delete(name); modified++; res.end();
     } else if (controls.readStatus) res.writeHead(controls.readStatus).end('Read failed');
     else if (notes.has(name)) {
-      if (controls.etags) res.setHeader('ETag', revision(notes.get(name)));
+      if (controls.sb3) {
+        // SilverBullet 3: GET's ETag is content-typed and not accepted by If-Match
+        res.setHeader('ETag', revision(notes.get(name)).replace('sha256:', 'sha256-typed:'));
+        res.setHeader('X-SilverBullet-Revision', revision(notes.get(name)));
+      } else if (controls.etags) res.setHeader('ETag', revision(notes.get(name)));
       res.end(notes.get(name));
     }
     else res.writeHead(404).end('Missing note');
